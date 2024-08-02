@@ -9,7 +9,7 @@ set(${PROJECT_NAME}_VERSION_MINOR 0)
 
 include_directories( ${CMAKE_SOURCE_DIR}/include/ )
 
-find_package(PCL 1.2 REQUIRED)
+find_package(PCL REQUIRED)
 
 include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
