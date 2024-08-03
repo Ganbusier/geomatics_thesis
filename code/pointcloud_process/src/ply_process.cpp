@@ -6,17 +6,17 @@
 
 int main(int argc, char* argv[])
 {
-    if (argc != 4) {
-        std::cerr << "Usage: " << argv[0] << " <input.ply> <output.ply> <label>" << std::endl;
+    if (argc != 5) {
+        std::cerr << "Usage: " << argv[0] << " <input.ply> <output.ply> <label name (e.g. semantic_class)> <label value (int)>" << std::endl;
         return 1;
     }
 
     std::string input_file = argv[1];
     std::string output_file = argv[2];
-    std::string label = argv[3];
-    int target_label;
+    std::string target_label_name = argv[3];
+    int target_label_value;
     try {
-        target_label = std::stoi(argv[3]);
+        target_label_value = std::stoi(argv[4]);
     } catch (const std::exception &e) {
         std::cerr << "Invalid label value: " << e.what() << std::endl;
         return 1;
@@ -33,7 +33,7 @@ int main(int argc, char* argv[])
     try { vertices = file.request_properties_from_element("testing", { "x", "y", "z" }); }
     catch (const std::exception & e) { std::cerr << "tinyply exception: " << e.what() << std::endl; }
 
-    try { labels = file.request_properties_from_element("testing", { "sem_class" }); }
+    try { labels = file.request_properties_from_element("testing", { target_label_name }); }
     catch (const std::exception & e) { std::cerr << "tinyply exception: " << e.what() << std::endl; }
 
     file.read(ss);
@@ -48,13 +48,14 @@ int main(int argc, char* argv[])
     std::vector<label_t> target_labels;
 
     for (size_t i = 0; i < label_data.size(); ++i) {
-        if (label_data[i].label == target_label) {
+        if (label_data[i].label == target_label_value) {
             target_vertices.push_back(vertex_data[i]);
             target_labels.push_back(label_data[i]);
         }
     }
 
-    write_ply(output_file, target_vertices, target_labels);
+    // write_ply(output_file, target_vertices, target_labels);
+    write_xyz(output_file, target_vertices, target_labels);
 
     return 0;
 }

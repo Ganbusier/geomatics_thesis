@@ -18,3 +18,18 @@ void write_ply(const std::string& filename, const std::vector<float3>& vertices,
 
     file.write(output_stream, true);
 }
+
+void write_xyz(const std::string& filename, const std::vector<float3>& vertices, const std::vector<label_t>& labels)
+{
+    std::ofstream ofs(filename);
+    if (!ofs.is_open()) {
+        std::cerr << "Failed to open output file: " << filename << std::endl;
+        return;
+    }
+
+    for (size_t i = 0; i < vertices.size(); ++i) {
+        ofs << vertices[i].x << " " << vertices[i].y << " " << vertices[i].z << " " << labels[i].label << "\n";
+    }
+
+    ofs.close();
+}
