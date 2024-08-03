@@ -6,12 +6,21 @@
 
 int main(int argc, char* argv[])
 {
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " <input.ply>" << std::endl;
+    if (argc != 4) {
+        std::cerr << "Usage: " << argv[0] << " <input.ply> <output.ply> <label>" << std::endl;
         return 1;
     }
 
     std::string input_file = argv[1];
+    std::string output_file = argv[2];
+    std::string label = argv[3];
+    int target_label;
+    try {
+        target_label = std::stoi(argv[3]);
+    } catch (const std::exception &e) {
+        std::cerr << "Invalid label value: " << e.what() << std::endl;
+        return 1;
+    }
     std::ifstream ss(input_file, std::ios::binary);
     if (ss.fail()) {
         throw std::runtime_error("failed to open " + input_file);
@@ -21,10 +30,10 @@ int main(int argc, char* argv[])
     file.parse_header(ss);
 
     std::shared_ptr<tinyply::PlyData> vertices, labels;
-    try { vertices = file.request_properties_from_element("vertex", { "x", "y", "z" }); }
+    try { vertices = file.request_properties_from_element("testing", { "x", "y", "z" }); }
     catch (const std::exception & e) { std::cerr << "tinyply exception: " << e.what() << std::endl; }
 
-    try { labels = file.request_properties_from_element("vertex", { "label" }); }
+    try { labels = file.request_properties_from_element("testing", { "sem_class" }); }
     catch (const std::exception & e) { std::cerr << "tinyply exception: " << e.what() << std::endl; }
 
     file.read(ss);
@@ -35,31 +44,17 @@ int main(int argc, char* argv[])
     std::vector<label_t> label_data(labels->count);
     std::memcpy(label_data.data(), labels->buffer.get(), labels->buffer.size_bytes());
 
-    std::vector<float3> poles_vertices;
-    std::vector<label_t> poles_labels;
+    std::vector<float3> target_vertices;
+    std::vector<label_t> target_labels;
 
     for (size_t i = 0; i < label_data.size(); ++i) {
-        if (std::string(label_data[i].label) == "poles") {
-            poles_vertices.push_back(vertex_data[i]);
-            poles_labels.push_back(label_data[i]);
+        if (label_data[i].label == target_label) {
+            target_vertices.push_back(vertex_data[i]);
+            target_labels.push_back(label_data[i]);
         }
     }
 
-    write_ply("output_poles.ply", poles_vertices, poles_labels);
+    write_ply(output_file, target_vertices, target_labels);
 
     return 0;
-}
-
-void write_ply(const std::string& filename, const std::vector<float3>& vertices, const std::vector<label_t>& labels)
-{
-    std::filebuf fb_binary;
-    fb_binary.open(filename, std::ios::out | std::ios::binary);
-    std::ostream output_stream(&fb_binary);
-
-    tinyply::PlyFile file;
-
-    file.add_properties_to_element("vertex", { "x", "y", "z" }, tinyply::Type::FLOAT32, vertices.size(), reinterpret_cast<const uint8_t*>(vertices.data()), tinyply::Type::INVALID, 0);
-    file.add_properties_to_element("vertex", { "label" }, tinyply::Type::UINT8, labels.size(), reinterpret_cast<const uint8_t*>(labels.data()), tinyply::Type::INVALID, 0);
-
-    file.write(output_stream, true);
 }
