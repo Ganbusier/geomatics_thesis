@@ -48,7 +48,7 @@ int main(int argc, char* argv[])
     std::cout << "=======================" << std::endl;
 
     // get vertices and corresponding class labels
-    std::shared_ptr<tinyply::PlyData> vertices, labels;
+    std::shared_ptr<tinyply::PlyData> vertices, labels, instance_class_labels;
     try { vertices = file.request_properties_from_element("testing", { "x", "y", "z" }); }
     catch (const std::exception & e) { std::cerr << "tinyply exception: " << e.what() << std::endl; }
 
@@ -63,21 +63,22 @@ int main(int argc, char* argv[])
     std::vector<label_t> label_data(labels->count);
     std::memcpy(label_data.data(), labels->buffer.get(), labels->buffer.size_bytes());
 
-    // get vertices with target label value
+    // get vertices with target label value and instance value
     std::vector<float3> target_vertices;
-    std::vector<label_t> target_labels;
+    std::vector<label_t> target_label_values;
+    std::vector<label_t> target_instance_label_values;
 
     for (size_t i = 0; i < label_data.size(); ++i) {
         if (label_data[i].label == target_label_value) {
             target_vertices.push_back(vertex_data[i]);
-            target_labels.push_back(label_data[i]);
+            target_label_values.push_back(label_data[i]);
         }
     }
 
     // write output file to the build directory
     
-    //write_ply("output.ply", target_vertices, target_labels);
-    write_xyz("output.xyz", target_vertices, target_labels);
+    write_ply("output.ply", target_vertices, target_label_values, target_label_name);
+    //write_xyz("output.xyz", target_vertices, target_label_values);
 
     return 0;
 }
