@@ -2,21 +2,21 @@
 #include <fstream>
 #include <ply_process.h>
 #include <tinyply.h>
+#include <cstring>
 
 
 int main(int argc, char* argv[])
 {
-    if (argc != 5) {
-        std::cerr << "Usage: " << argv[0] << " <input.ply> <output.ply> <label name (e.g. semantic_class)> <label value (int)>" << std::endl;
+    if (argc != 4) {
+        std::cerr << "Usage: " << argv[0] << " <input.ply> <label name (e.g. semantic_class)> <label value (int)>" << std::endl;
         return 1;
     }
 
     std::string input_file = argv[1];
-    std::string output_file = argv[2];
-    std::string target_label_name = argv[3];
+    std::string target_label_name = argv[2];
     int target_label_value;
     try {
-        target_label_value = std::stoi(argv[4]);
+        target_label_value = std::stoi(argv[3]);
     } catch (const std::exception &e) {
         std::cerr << "Invalid label value: " << e.what() << std::endl;
         return 1;
@@ -28,6 +28,12 @@ int main(int argc, char* argv[])
 
     tinyply::PlyFile file;
     file.parse_header(ss);
+
+    std::cout << "PLY Header Information:" << std::endl;
+    std::cout << "=======================" << std::endl;
+    for (const auto &info : file.get_info()) {
+        std::cout << info << std::endl;
+    }
 
     std::shared_ptr<tinyply::PlyData> vertices, labels;
     try { vertices = file.request_properties_from_element("testing", { "x", "y", "z" }); }
@@ -54,8 +60,8 @@ int main(int argc, char* argv[])
         }
     }
 
-    // write_ply(output_file, target_vertices, target_labels);
-    write_xyz(output_file, target_vertices, target_labels);
+    //write_ply("output.ply", target_vertices, target_labels);
+    write_xyz("output.xyz", target_vertices, target_labels);
 
     return 0;
 }
