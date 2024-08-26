@@ -12,6 +12,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    // read input arguments and check validity
     std::string input_file = argv[1];
     std::string target_label_name = argv[2];
     int target_label_value;
@@ -26,15 +27,27 @@ int main(int argc, char* argv[])
         throw std::runtime_error("failed to open " + input_file);
     }
 
+    // create a tinyply object and parse header info to it
     tinyply::PlyFile file;
     file.parse_header(ss);
 
+    // read format and header information
     std::cout << "PLY Header Information:" << std::endl;
     std::cout << "=======================" << std::endl;
-    for (const auto &info : file.get_info()) {
-        std::cout << info << std::endl;
-    }
 
+    std::cout << "Format: " << (file.is_binary_file() ? "Binary" : "ASCII") << std::endl;
+
+    for (const auto &element : file.get_elements()) {
+        std::cout << "Element: " << element.name << " (" << element.size << ")" << std::endl;
+
+        for (const auto &property : element.properties) {
+            std::cout << "Property: " << property.name << " (Type: "
+             << tinyply::PropertyTable[property.propertyType].str << ")" << std::endl;
+        }
+    }
+    std::cout << "=======================" << std::endl;
+
+    // get vertices and corresponding class labels
     std::shared_ptr<tinyply::PlyData> vertices, labels;
     try { vertices = file.request_properties_from_element("testing", { "x", "y", "z" }); }
     catch (const std::exception & e) { std::cerr << "tinyply exception: " << e.what() << std::endl; }
@@ -50,6 +63,7 @@ int main(int argc, char* argv[])
     std::vector<label_t> label_data(labels->count);
     std::memcpy(label_data.data(), labels->buffer.get(), labels->buffer.size_bytes());
 
+    // get vertices with target label value
     std::vector<float3> target_vertices;
     std::vector<label_t> target_labels;
 
@@ -60,6 +74,8 @@ int main(int argc, char* argv[])
         }
     }
 
+    // write output file to the build directory
+    
     //write_ply("output.ply", target_vertices, target_labels);
     write_xyz("output.xyz", target_vertices, target_labels);
 
