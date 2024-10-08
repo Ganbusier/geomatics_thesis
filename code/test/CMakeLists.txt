@@ -18,3 +18,5 @@ add_definitions(${PCL_DEFINITIONS})
 FILE(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES})
+
+target_compile_options(${PROJECT_NAME} PRIVATE -msse3 -msse4.1)
