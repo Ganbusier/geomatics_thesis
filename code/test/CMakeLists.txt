@@ -10,6 +10,8 @@ set(${PROJECT_NAME}_VERSION_MINOR 0)
 include_directories( ${CMAKE_SOURCE_DIR}/include/ )
 
 find_package(PCL REQUIRED)
+find_package(CGAL REQUIRED)
+find_package(CGAL REQUIRED OPTIONAL_COMPONENTS Qt6)
 
 include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
@@ -17,6 +19,11 @@ add_definitions(${PCL_DEFINITIONS})
 
 FILE(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
-target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES}) 
+target_link_libraries(${PROJECT_NAME} CGAL::CGAL)
+
+if(CGAL_Qt6_FOUND)
+    target_link_libraries(${PROJECT_NAME} PUBLIC CGAL::CGAL_Basic_viewer)
+endif()
 
 target_compile_options(${PROJECT_NAME} PRIVATE -msse3 -msse4.1)
