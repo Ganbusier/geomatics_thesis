@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 set(${PROJECT_NAME}_VERSION_MAJOR 1)
 set(${PROJECT_NAME}_VERSION_MINOR 0)
+set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type")
 
 include_directories( ${CMAKE_SOURCE_DIR}/include/ )
 
@@ -25,15 +26,9 @@ add_definitions(${CGAL_DEFINITIONS})
 
 FILE(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
-<<<<<<< Updated upstream
 target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES}) 
 target_link_libraries(${PROJECT_NAME} CGAL::CGAL)
 
-if(CGAL_Qt6_FOUND)
-    target_link_libraries(${PROJECT_NAME} PUBLIC CGAL::CGAL_Basic_viewer)
-endif()
-=======
 target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} ${CGAL_LIBRARIES})
->>>>>>> Stashed changes
 
 target_compile_options(${PROJECT_NAME} PRIVATE -msse3 -msse4.1)
