@@ -5,7 +5,7 @@
             "type": "shell",
             "command": "cmake",
             "args": [
-                "D:/Files/GitHub/geomatics_thesis/code/test",
+                "D:/Files/GitHub/geomatics_thesis/",
                 "-G", "MinGW Makefiles",
                 "-DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake"
             ],
