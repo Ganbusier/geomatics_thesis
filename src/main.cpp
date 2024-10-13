@@ -121,18 +121,18 @@ int main() {
             int geo_class_value = -1;
             if(const Plane* plane = dynamic_cast<const Plane*>(shape.get())) {
                 geo_class_value = 0; // Plane
-                std::cout << "Detected a plane" << std::endl;
+                std::cout << "Instance " << ins_class << ": Detected a plane" << std::endl;
             }
             else if(const Sphere* sphere = dynamic_cast<const Sphere*>(shape.get())) {
                 geo_class_value = 1; // Sphere
-                std::cout << "Detected a sphere" << std::endl;
+                std::cout << "Instance " << ins_class << ": Detected a sphere" << std::endl;
             }
             else if(const Cylinder* cylinder = dynamic_cast<const Cylinder*>(shape.get())) {
                 geo_class_value = 2; // Cylinder
-                std::cout << "Detected a cylinder" << std::endl;
+                std::cout << "Instance " << ins_class << ": Detected a cylinder" << std::endl;
             }
             else {
-                std::cerr << "Unknown shape detected." << std::endl;
+                std::cerr << "Instance " << ins_class << ": Unknown shape detected." << std::endl;
                 return -1;
             }
             // set geo_class value for each point
