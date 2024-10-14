@@ -6,8 +6,6 @@ set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 
 include_directories(${CMAKE_SOURCE_DIR}/include/)
 
-find_package(OpenMP REQUIRED)
-
 find_package(PCL REQUIRED)
 include_directories(${PCL_INCLUDE_DIRS})
 add_definitions(${PCL_DEFINITIONS})
@@ -18,8 +16,12 @@ link_directories(${CGAL_LIBRARY_DIRS})
 FILE(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 
-target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} CGAL::CGAL)
+# include(FetchContent)
+# FetchContent_Declare(rerun_sdk URL
+#     https://github.com/rerun-io/rerun/releases/latest/download/rerun_cpp_sdk.zip)
+# FetchContent_MakeAvailable(rerun_sdk)
 
-if (OpenMP_CXX_FOUND)
-    target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
-endif()
+# set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 17)
+
+target_link_libraries(${PROJECT_NAME} PUBLIC ${PCL_LIBRARIES} CGAL::CGAL)
+# target_link_libraries(${PROJECT_NAME} PRIVATE rerun_cpp_sdk)

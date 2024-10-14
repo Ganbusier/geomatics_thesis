@@ -1,11 +1,14 @@
 FROM ubuntu:latest
 WORKDIR /app
-COPY . .
 
 RUN apt-get update && \
     apt-get install -y \
     g++ \
     cmake \
+    git \
+    python3 \
+    python3-pip \
+    python3.12-venv \
     libboost-all-dev \
     libeigen3-dev \
     libflann-dev \

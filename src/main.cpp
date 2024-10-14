@@ -14,6 +14,9 @@
 #include <CGAL/Point_with_normal_3.h>
 #include <CGAL/property_map.h>
 
+// #include <rerun.hpp>
+// #include <rerun/demo_utils.hpp>
+
 #include "custom_ply.h"
 
 typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
@@ -32,11 +35,22 @@ typedef CGAL::Shape_detection::Plane<Traits> Plane;
 typedef CGAL::Shape_detection::Sphere<Traits> Sphere;
 typedef CGAL::Shape_detection::Cylinder<Traits> Cylinder;
 
-int main() {
+// using namespace rerun::demo;
+
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <input_file_path> <semantic_class>" << std::endl;
+        return -1;
+    }
+
+    // read semantic class from command line argument
+    std::string input_file_path = argv[1];
+    int semantic_class = std::stoi(argv[2]);
+
     // declare point cloud
     pcl::PointCloud<CustomPoint>::Ptr cloud(new pcl::PointCloud<CustomPoint>);
 
-    std::string filepath = modifyPLYHeader("../resources/pointcloud.ply");
+    std::string filepath = modifyPLYHeader(input_file_path);
     if (filepath.empty()) {
         std::cerr << "Cannot modify PLY header." << std::endl;
         return -1;
@@ -61,7 +75,7 @@ int main() {
     // filter points by semantic class and instance class, in Dalles dataset, semantic class 5 represents power lines
     std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr> grouped_points;
     for (const auto& point : cloud->points) {
-        if (point.sem_class == 5) {
+        if (point.sem_class == semantic_class) {
             // group points by instance class
             if (grouped_points.find(point.ins_class) == grouped_points.end()) {
                 grouped_points[point.ins_class] = pcl::PointCloud<CustomPoint>::Ptr(new pcl::PointCloud<CustomPoint>);
@@ -117,6 +131,7 @@ int main() {
         ransac.detect();
 
         // Set different values for each detected shape
+        int shape_idx = 0;
         for(const auto& shape : ransac.shapes()) {
             int geo_class_value = -1;
             if(const Plane* plane = dynamic_cast<const Plane*>(shape.get())) {
@@ -140,12 +155,12 @@ int main() {
                 for(auto idx : shape->indices_of_assigned_points()) {
                     if(idx < points->points.size()) {
                         points->points[idx].geo_class = geo_class_value;
+                        points->points[idx].shape_idx = shape_idx;
                     }
                 }
             }
+            shape_idx++;
         }
-
-
     }
 
     // export filtered points to PLY files
@@ -157,6 +172,23 @@ int main() {
         }
         std::cout << "Exported " << points->points.size() << " points to " << output_filename << std::endl;
     }
+
+    // create rerun recording
+    // const auto rec = rerun::RecordingStream("thesis");
+    // rec.spawn().exit_on_failure();
+
+    // std::vector<rerun::Position3D> rec_points;
+    // std::vector<rerun::Color> rec_colors;
+
+    // for(const auto& point : grouped_points.at(0)->points) {
+    //     rec_points.emplace_back(point.x, point.y, point.z);
+    //     if(point.geo_class == 0) rec_colors.emplace_back(255, 0, 0); // Plane
+    //     else if(point.geo_class == 1) rec_colors.emplace_back(0, 255, 0); // Sphere
+    //     else if(point.geo_class == 2) rec_colors.emplace_back(0, 0, 255); // Cylinder
+    //     else rec_colors.emplace_back(255, 255, 255); // Unknown
+    // }
+
+    // rec.log("my_points", rerun::Points3D(rec_points).with_colors(rec_colors).with_radii({0.5f}));
 
     return 0;
 }

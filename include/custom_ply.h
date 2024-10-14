@@ -17,6 +17,7 @@ struct CustomPoint {
     int sem_class;
     int ins_class;
     int geo_class;
+    int shape_idx;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
@@ -30,5 +31,6 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(CustomPoint,
                                   (int, intensity, intensity)
                                   (int, sem_class, sem_class)
                                   (int, ins_class, ins_class)
-                                  (int, geo_class, geo_class))
+                                  (int, geo_class, geo_class)
+                                  (int, shape_idx, shape_idx))
 #endif // CUSTOM_PLY_H
