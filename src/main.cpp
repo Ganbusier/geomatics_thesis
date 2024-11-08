@@ -1,18 +1,18 @@
-#include <iostream>
-#include <filesystem>
-
-#include <pcl/io/ply_io.h>
-#include <pcl/point_cloud.h>
-#include <pcl/common/common.h>
-#include <pcl/console/print.h>
-#include <pcl/point_types.h>
-#include <pcl/features/normal_3d.h>
-#include <pcl/kdtree/kdtree_flann.h>
-
-#include <CGAL/Shape_detection/Efficient_RANSAC.h>
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/Point_with_normal_3.h>
+#include <CGAL/Shape_detection/Efficient_RANSAC.h>
 #include <CGAL/property_map.h>
+#include <pcl/common/common.h>
+#include <pcl/console/print.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/io/ply_io.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+#include <filesystem>
+#include <iostream>
+
 
 // #include <rerun.hpp>
 // #include <rerun/demo_utils.hpp>
@@ -23,12 +23,12 @@ typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
 typedef Kernel::Point_3 Point;
 typedef Kernel::Vector_3 Vector;
 typedef std::pair<Point, Vector> Point_with_normal;
-typedef CGAL::First_of_pair_property_map<Point_with_normal>  Point_map;
+typedef CGAL::First_of_pair_property_map<Point_with_normal> Point_map;
 typedef CGAL::Second_of_pair_property_map<Point_with_normal> Normal_map;
 typedef std::vector<Point_with_normal> PointList;
 
-typedef CGAL::Shape_detection::Efficient_RANSAC_traits
-<Kernel, PointList, Point_map, Normal_map> Traits;
+typedef CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, PointList, Point_map, Normal_map>
+    Traits;
 
 typedef CGAL::Shape_detection::Efficient_RANSAC<Traits> Efficient_RANSAC;
 typedef CGAL::Shape_detection::Plane<Traits> Plane;
@@ -72,13 +72,15 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(output_folder);
     }
 
-    // filter points by semantic class and instance class, in Dalles dataset, semantic class 5 represents power lines
+    // filter points by semantic class and instance class, in Dalles dataset, semantic class 5
+    // represents power lines
     std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr> grouped_points;
     for (const auto& point : cloud->points) {
         if (point.sem_class == semantic_class) {
             // group points by instance class
             if (grouped_points.find(point.ins_class) == grouped_points.end()) {
-                grouped_points[point.ins_class] = pcl::PointCloud<CustomPoint>::Ptr(new pcl::PointCloud<CustomPoint>);
+                grouped_points[point.ins_class] =
+                    pcl::PointCloud<CustomPoint>::Ptr(new pcl::PointCloud<CustomPoint>);
             }
             grouped_points[point.ins_class]->points.push_back(point);
         }
@@ -116,11 +118,9 @@ int main(int argc, char** argv) {
         }
 
         PointList cgal_points;
-        for(const auto& point : points->points) {
-            cgal_points.emplace_back(
-                Point(point.x, point.y, point.z), 
-                Vector(point.normal_x, point.normal_y, point.normal_z)
-            );
+        for (const auto& point : points->points) {
+            cgal_points.emplace_back(Point(point.x, point.y, point.z),
+                                     Vector(point.normal_x, point.normal_y, point.normal_z));
         }
 
         Efficient_RANSAC ransac;
@@ -132,28 +132,25 @@ int main(int argc, char** argv) {
 
         // Set different values for each detected shape
         int shape_idx = 0;
-        for(const auto& shape : ransac.shapes()) {
+        for (const auto& shape : ransac.shapes()) {
             int geo_class_value = -1;
-            if(const Plane* plane = dynamic_cast<const Plane*>(shape.get())) {
-                geo_class_value = 0; // Plane
+            if (const Plane* plane = dynamic_cast<const Plane*>(shape.get())) {
+                geo_class_value = 0;  // Plane
                 std::cout << "Instance " << ins_class << ": Detected a plane" << std::endl;
-            }
-            else if(const Sphere* sphere = dynamic_cast<const Sphere*>(shape.get())) {
-                geo_class_value = 1; // Sphere
+            } else if (const Sphere* sphere = dynamic_cast<const Sphere*>(shape.get())) {
+                geo_class_value = 1;  // Sphere
                 std::cout << "Instance " << ins_class << ": Detected a sphere" << std::endl;
-            }
-            else if(const Cylinder* cylinder = dynamic_cast<const Cylinder*>(shape.get())) {
-                geo_class_value = 2; // Cylinder
+            } else if (const Cylinder* cylinder = dynamic_cast<const Cylinder*>(shape.get())) {
+                geo_class_value = 2;  // Cylinder
                 std::cout << "Instance " << ins_class << ": Detected a cylinder" << std::endl;
-            }
-            else {
+            } else {
                 std::cerr << "Instance " << ins_class << ": Unknown shape detected." << std::endl;
                 return -1;
             }
             // set geo_class value for each point
-            if(geo_class_value != -1) {
-                for(auto idx : shape->indices_of_assigned_points()) {
-                    if(idx < points->points.size()) {
+            if (geo_class_value != -1) {
+                for (auto idx : shape->indices_of_assigned_points()) {
+                    if (idx < points->points.size()) {
                         points->points[idx].geo_class = geo_class_value;
                         points->points[idx].shape_idx = shape_idx;
                     }
@@ -170,7 +167,8 @@ int main(int argc, char** argv) {
             PCL_ERROR("Failed to save filtered points to %s.\n", output_filename.c_str());
             return -1;
         }
-        std::cout << "Exported " << points->points.size() << " points to " << output_filename << std::endl;
+        std::cout << "Exported " << points->points.size() << " points to " << output_filename
+                  << std::endl;
     }
 
     // create rerun recording
