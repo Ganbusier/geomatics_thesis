@@ -72,8 +72,7 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(output_folder);
     }
 
-    // filter points by semantic class and instance class, in Dalles dataset, semantic class 5
-    // represents power lines
+    // filter points by semantic class and instance class
     std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr> grouped_points;
     for (const auto& point : cloud->points) {
         if (point.sem_class == semantic_class) {
@@ -86,7 +85,7 @@ int main(int argc, char** argv) {
         }
     }
     if (grouped_points.empty()) {
-        std::cerr << "No points found in semantic class 5." << std::endl;
+        std::cerr << "No points found in semantic class " << semantic_class << std::endl;
         return -1;
     }
 
