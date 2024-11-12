@@ -127,7 +127,15 @@ int main(int argc, char** argv) {
         ransac.add_shape_factory<Plane>();
         ransac.add_shape_factory<Sphere>();
         ransac.add_shape_factory<Cylinder>();
-        ransac.detect();
+
+        Efficient_RANSAC::Parameters parameters;
+        parameters.epsilon = 0.5f;
+        parameters.normal_threshold = 0.9f;
+        parameters.cluster_epsilon = 0.01f;
+        parameters.min_points = 10;
+        parameters.probability = 0.05f;
+
+        ransac.detect(parameters);
 
         // Set different values for each detected shape
         int shape_idx = 0;
