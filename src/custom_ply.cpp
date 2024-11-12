@@ -1,8 +1,4 @@
-#include <iostream>
-#include <fstream>
-#include <pcl/io/ply_io.h>
-#include <pcl/point_types.h>
-#include <pcl/kdtree/kdtree_flann.h>
+#include <../include/custom_ply.h>
 
 
 // this function is designed for Dalles dataset specifically, which modifies 

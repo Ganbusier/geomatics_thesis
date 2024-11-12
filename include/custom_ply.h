@@ -4,7 +4,10 @@
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 #include <pcl/io/pcd_io.h> 
+#include <pcl/kdtree/kdtree_flann.h>
 #include <string> 
+#include <iostream>
+#include <fstream>
 
 std::string modifyPLYHeader(const std::string &filepath);
 
