@@ -13,7 +13,6 @@
 #include <filesystem>
 #include <iostream>
 
-
 // #include <rerun.hpp>
 // #include <rerun/demo_utils.hpp>
 
@@ -137,33 +136,45 @@ int main(int argc, char** argv) {
 
         ransac.detect(parameters);
 
-        // Set different values for each detected shape
-        int shape_idx = 0;
-        for (const auto& shape : ransac.shapes()) {
-            int geo_class_value = -1;
-            if (const Plane* plane = dynamic_cast<const Plane*>(shape.get())) {
-                geo_class_value = 0;  // Plane
-                std::cout << "Instance " << ins_class << ": Detected a plane" << std::endl;
-            } else if (const Sphere* sphere = dynamic_cast<const Sphere*>(shape.get())) {
-                geo_class_value = 1;  // Sphere
-                std::cout << "Instance " << ins_class << ": Detected a sphere" << std::endl;
-            } else if (const Cylinder* cylinder = dynamic_cast<const Cylinder*>(shape.get())) {
-                geo_class_value = 2;  // Cylinder
-                std::cout << "Instance " << ins_class << ": Detected a cylinder" << std::endl;
-            } else {
-                std::cerr << "Instance " << ins_class << ": Unknown shape detected." << std::endl;
-                return -1;
+        // Set different values for each detected shape, if not detected, set to -1
+        if (ransac.shapes().empty()) {
+            for (auto& point : points->points) {
+                point.geo_class = -1;
             }
-            // set geo_class value for each point
-            if (geo_class_value != -1) {
+            std::cerr << "Instance " << ins_class << ": No shapes detected." << std::endl;
+        } else {
+            int shape_idx = 0;
+            int plane_count = 0;
+            int sphere_count = 0;
+            int cylinder_count = 0;
+            for (const auto& shape : ransac.shapes()) {
+                int geo_class_value = -1;
+                if (const Plane* plane = dynamic_cast<const Plane*>(shape.get())) {
+                    geo_class_value = 0;  // Plane
+                    plane_count++;
+                } else if (const Sphere* sphere = dynamic_cast<const Sphere*>(shape.get())) {
+                    geo_class_value = 1;  // Sphere
+                    sphere_count++;
+                } else if (const Cylinder* cylinder = dynamic_cast<const Cylinder*>(shape.get())) {
+                    geo_class_value = 2;  // Cylinder
+                    cylinder_count++;
+                } else {
+                    std::cerr << "Instance " << ins_class << ": Unknown shape detected."
+                              << std::endl;
+                    return -1;
+                }
+                // set geo_class value for each point
                 for (auto idx : shape->indices_of_assigned_points()) {
                     if (idx < points->points.size()) {
                         points->points[idx].geo_class = geo_class_value;
                         points->points[idx].shape_idx = shape_idx;
                     }
                 }
+                shape_idx++;
             }
-            shape_idx++;
+            std::cout << "Instance " << ins_class << ": Detected " << plane_count << " planes, "
+                      << sphere_count << " spheres, and " << cylinder_count << " cylinders."
+                      << std::endl;
         }
     }
 
