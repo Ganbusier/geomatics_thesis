@@ -1,4 +1,4 @@
-#include <../include/custom_ply.h>
+#include "custom_ply.h"
 
 
 // this function is designed for Dalles dataset specifically, which modifies 
