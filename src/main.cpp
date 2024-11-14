@@ -1,15 +1,3 @@
-#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
-#include <CGAL/Point_with_normal_3.h>
-#include <CGAL/Shape_detection/Efficient_RANSAC.h>
-#include <CGAL/property_map.h>
-#include <pcl/common/common.h>
-#include <pcl/console/print.h>
-#include <pcl/features/normal_3d.h>
-#include <pcl/io/ply_io.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-
 #include <filesystem>
 #include <iostream>
 
@@ -20,6 +8,7 @@
 // #include <rerun/demo_utils.hpp>
 
 // using namespace rerun::demo;
+
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -33,22 +22,7 @@ int main(int argc, char** argv) {
 
     // declare point cloud
     pcl::PointCloud<CustomPoint>::Ptr cloud(new pcl::PointCloud<CustomPoint>);
-
-    std::string filepath = modifyPLYHeader(input_file_path);
-    if (filepath.empty()) {
-        std::cerr << "Cannot modify PLY header." << std::endl;
-        return -1;
-    }
-
-    // load point cloud from modified PLY file
-    if (pcl::io::loadPLYFile<CustomPoint>(filepath, *cloud) == -1) {
-        PCL_ERROR("Failed to load point cloud from %s.\n", filepath.c_str());
-        return -1;
-    }
-
-    std::cout << "Successfully loaded: " << cloud->points.size() << " points" << std::endl;
-
-    remove(filepath.c_str());
+    loadPLY(cloud, input_file_path, true);
 
     // create output folder if not exists
     std::string output_folder = "./output/";
@@ -58,20 +32,7 @@ int main(int argc, char** argv) {
 
     // filter points by semantic class and instance class
     std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr> grouped_points;
-    for (const auto& point : cloud->points) {
-        if (point.sem_class == semantic_class) {
-            // group points by instance class
-            if (grouped_points.find(point.ins_class) == grouped_points.end()) {
-                grouped_points[point.ins_class] =
-                    pcl::PointCloud<CustomPoint>::Ptr(new pcl::PointCloud<CustomPoint>);
-            }
-            grouped_points[point.ins_class]->points.push_back(point);
-        }
-    }
-    if (grouped_points.empty()) {
-        std::cerr << "No points found in semantic class " << semantic_class << std::endl;
-        return -1;
-    }
+    filterBySemClass(grouped_points, cloud, semantic_class);
 
     // For each instance, compute normals and detect shapes using CGAL
     for (const auto& [ins_class, points] : grouped_points) {
