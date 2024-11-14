@@ -2,7 +2,7 @@
 
 // this function is designed for Dalles dataset specifically, which modifies
 // the PLY header to make it compatible with PCL library and returns the temporary file path
-std::string modifyPLYHeader(const std::string& filepath) {
+std::string modifyPLYHeader(const std::string filepath) {
     std::ifstream infile(filepath);
     std::string temp_filepath = "/tmp/temp_pointcloud.ply";
     std::ofstream outfile(temp_filepath);
@@ -52,7 +52,7 @@ void loadPLY(pcl::PointCloud<CustomPoint>::Ptr& cloud, std::string input_file_pa
 }
 
 void filterBySemClass(std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr>& grouped_points,
-                      pcl::PointCloud<CustomPoint>::Ptr& cloud, const int sem_class) {
+                      const pcl::PointCloud<CustomPoint>::Ptr& cloud, const int sem_class) {
     for (const auto& point : cloud->points) {
         if (point.sem_class == sem_class) {
             // group points by instance class
@@ -66,5 +66,24 @@ void filterBySemClass(std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr>
     if (grouped_points.empty()) {
         std::cerr << "No points found in semantic class " << sem_class << std::endl;
         return;
+    }
+}
+
+void outputPLY(std::string output_folder,
+               std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr>& grouped_points) {
+    // create output folder if not exists
+    if (!std::filesystem::exists(output_folder)) {
+        std::filesystem::create_directories(output_folder);
+    }
+
+    // export filtered points to PLY files
+    for (const auto& [ins_class, points] : grouped_points) {
+        std::string output_filename = "./output/output" + std::to_string(ins_class) + ".ply";
+        if (pcl::io::savePLYFileBinary(output_filename, *points) == -1) {
+            PCL_ERROR("Failed to save filtered points to %s.\n", output_filename.c_str());
+            return;
+        }
+        std::cout << "Exported " << points->points.size() << " points to " << output_filename
+                  << std::endl;
     }
 }

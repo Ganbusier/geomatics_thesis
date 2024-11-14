@@ -24,12 +24,6 @@ int main(int argc, char** argv) {
     pcl::PointCloud<CustomPoint>::Ptr cloud(new pcl::PointCloud<CustomPoint>);
     loadPLY(cloud, input_file_path, true);
 
-    // create output folder if not exists
-    std::string output_folder = "./output/";
-    if (!std::filesystem::exists(output_folder)) {
-        std::filesystem::create_directories(output_folder);
-    }
-
     // filter points by semantic class and instance class
     std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr> grouped_points;
     filterBySemClass(grouped_points, cloud, semantic_class);
@@ -39,16 +33,9 @@ int main(int argc, char** argv) {
         ransac_run(points, ins_class);
     }
 
-    // export filtered points to PLY files
-    for (const auto& [ins_class, points] : grouped_points) {
-        std::string output_filename = "./output/output" + std::to_string(ins_class) + ".ply";
-        if (pcl::io::savePLYFileBinary(output_filename, *points) == -1) {
-            PCL_ERROR("Failed to save filtered points to %s.\n", output_filename.c_str());
-            return -1;
-        }
-        std::cout << "Exported " << points->points.size() << " points to " << output_filename
-                  << std::endl;
-    }
+    // create output folder if not exists
+    std::string output_folder = "./output/";
+    outputPLY(output_folder, grouped_points);
 
     // create rerun recording
     // const auto rec = rerun::RecordingStream("thesis");

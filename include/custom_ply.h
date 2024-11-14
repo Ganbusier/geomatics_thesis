@@ -6,6 +6,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -29,12 +30,14 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(
         float, normal_z, normal_z)(int, intensity, intensity)(int, sem_class, sem_class)(
         int, ins_class, ins_class)(int, geo_class, geo_class)(int, shape_idx, shape_idx))
 
-std::string modifyPLYHeader(const std::string& filepath);
+std::string modifyPLYHeader(const std::string filepath);
 
 void filterBySemClass(std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr>& grouped_points,
-                      pcl::PointCloud<CustomPoint>::Ptr& cloud, const int sem_class);
+                      const pcl::PointCloud<CustomPoint>::Ptr& cloud, const int sem_class);
 
 void loadPLY(pcl::PointCloud<CustomPoint>::Ptr& cloud, std::string input_file_path,
              bool modify_header = false);
 
+void outputPLY(std::string output_folder,
+               std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr>& grouped_points);
 #endif  // CUSTOM_PLY_H
