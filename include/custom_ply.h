@@ -13,14 +13,14 @@
 
 struct CustomPoint {
     PCL_ADD_POINT4D;  // keep compatible with pcl::PointXYZ
-    float normal_x;
-    float normal_y;
-    float normal_z;
-    int intensity;
-    int sem_class;
-    int ins_class;
-    int geo_class;
-    int shape_idx;
+    float normal_x = 0.0f;
+    float normal_y = 0.0f;
+    float normal_z = 0.0f;
+    int intensity = 0;
+    int sem_class = -1;
+    int ins_class = -1;
+    int geo_class = -1;
+    int shape_idx = -1;
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
 
