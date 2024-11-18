@@ -17,8 +17,7 @@ struct CustomPoint {
     float normal_y = 0.0f;
     float normal_z = 0.0f;
     int intensity = 0;
-    int sem_class = -1; // for dalles dataset
-    int semantics = -1; // for AHN dataset
+    int sem_class = -1;
     int ins_class = -1;
     int geo_class = -1;
     int shape_idx = -1;
