@@ -15,7 +15,7 @@
 
 #include <iostream>
 
-#include "custom_ply.h"
+#include "custom_point.h"
 
 typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
 typedef Kernel::Point_3 Point;

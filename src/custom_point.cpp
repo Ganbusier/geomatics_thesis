@@ -1,4 +1,4 @@
-#include "custom_ply.h"
+#include "custom_point.h"
 
 // this function is designed for Dalles dataset specifically, which modifies
 // the PLY header to make it compatible with PCL library and returns the temporary file path

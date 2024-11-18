@@ -1,5 +1,5 @@
-#ifndef CUSTOM_PLY_H
-#define CUSTOM_PLY_H
+#ifndef CUSTOM_POINT_H
+#define CUSTOM_POINT_H
 
 #include <pcl/io/ply_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -17,7 +17,8 @@ struct CustomPoint {
     float normal_y = 0.0f;
     float normal_z = 0.0f;
     int intensity = 0;
-    int sem_class = -1;
+    int sem_class = -1; // for dalles dataset
+    int semantics = -1; // for AHN dataset
     int ins_class = -1;
     int geo_class = -1;
     int shape_idx = -1;
@@ -40,4 +41,4 @@ void loadPLY(pcl::PointCloud<CustomPoint>::Ptr& cloud, std::string input_file_pa
 
 void outputPLY(std::string output_folder,
                std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr>& grouped_points);
-#endif  // CUSTOM_PLY_H
+#endif  // CUSTOM_POINT_H

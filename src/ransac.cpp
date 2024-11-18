@@ -1,4 +1,4 @@
-#include "../include/ransac.h"
+#include "ransac.h"
 
 void ransac_run(const std::shared_ptr<pcl::PointCloud<CustomPoint>>& points, const int& ins_class) {
     // Construct PCL standard point cloud for normal estimation

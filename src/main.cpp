@@ -1,7 +1,7 @@
 #include <filesystem>
 #include <iostream>
 
-#include "custom_ply.h"
+#include "custom_point.h"
 #include "ransac.h"
 
 // #include <rerun.hpp>
