@@ -1,8 +1,6 @@
 #include "../include/ransac.h"
 
-void ransac_run(const std::shared_ptr<pcl::PointCloud<CustomPoint>>& points,
-                const int& ins_class) {
-    
+void ransac_run(const std::shared_ptr<pcl::PointCloud<CustomPoint>>& points, const int& ins_class) {
     // Construct PCL standard point cloud for normal estimation
     pcl::PointCloud<pcl::PointXYZ>::Ptr xyz_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     for (const auto& point : points->points) {
@@ -31,7 +29,7 @@ void ransac_run(const std::shared_ptr<pcl::PointCloud<CustomPoint>>& points,
     PointList cgal_points;
     for (const auto& point : points->points) {
         cgal_points.emplace_back(Point(point.x, point.y, point.z),
-                                    Vector(point.normal_x, point.normal_y, point.normal_z));
+                                 Vector(point.normal_x, point.normal_y, point.normal_z));
     }
 
     Efficient_RANSAC ransac;
@@ -41,11 +39,21 @@ void ransac_run(const std::shared_ptr<pcl::PointCloud<CustomPoint>>& points,
     ransac.add_shape_factory<Cylinder>();
 
     Efficient_RANSAC::Parameters parameters;
-    parameters.epsilon = 0.5f;
-    parameters.normal_threshold = 0.9f;
-    parameters.cluster_epsilon = 0.01f;
+
+    // maximum Euclidean distance between a point and a shape
+    parameters.epsilon = 1.0f;
+
+    // 0.9 < dot(surface_normal, point_normal)
+    parameters.normal_threshold = 0.8f;
+
+    // maximum Euclidean distance between two points in a cluster
+    parameters.cluster_epsilon = 0.8f;
+
+    // detect shape with at least 10% of points
     parameters.min_points = 10;
-    parameters.probability = 0.05f;
+
+    // probability to miss the largest primitive at each iteration
+    parameters.probability = 0.01f;
 
     ransac.detect(parameters);
 
@@ -85,7 +93,7 @@ void ransac_run(const std::shared_ptr<pcl::PointCloud<CustomPoint>>& points,
             shape_idx++;
         }
         std::cout << "Instance " << ins_class << ": Detected " << plane_count << " planes, "
-                  << sphere_count << " spheres, and " << cylinder_count << " cylinders."
-                  << std::endl;
+                  << sphere_count << " spheres, " << cylinder_count << " cylinders, and "
+                  << ransac.number_of_unassigned_points() << " unassigned points." << std::endl;
     }
 }
