@@ -20,6 +20,7 @@ if ( NOT Boost_FOUND )
 endif()
 
 # include for local directory
+include_directories( ${CGAL_SOURCE_DIR}/include )
 include_directories( ${CMAKE_SOURCE_DIR}/include )
 add_subdirectory(${CGAL_SOURCE_DIR})
 
