@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
 
     // declare point cloud
     pcl::PointCloud<CustomPoint>::Ptr cloud(new pcl::PointCloud<CustomPoint>);
-    loadPLY(cloud, input_file_path, false);
+    loadPLY(cloud, input_file_path, true);
 
     // filter points by semantic class and instance class
     std::unordered_map<int, pcl::PointCloud<CustomPoint>::Ptr> grouped_points;

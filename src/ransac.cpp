@@ -47,9 +47,9 @@ void ransac_run(const std::shared_ptr<pcl::PointCloud<CustomPoint>>& points, con
     parameters.normal_threshold = 0.8f;
 
     // maximum Euclidean distance between two points in a cluster
-    parameters.cluster_epsilon = 0.8f;
+    parameters.cluster_epsilon = 1.0f;
 
-    // detect shape with at least 10% of points
+    // minimum number of points in a shape
     parameters.min_points = 10;
 
     // probability to miss the largest primitive at each iteration
