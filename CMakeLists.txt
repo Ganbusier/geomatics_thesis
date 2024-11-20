@@ -6,7 +6,7 @@ project( geomatics_thesis )
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE Release)
-set(CGAL_SOURCE_DIR ${CMAKE_SOURCE_DIR}/3rd_party/cgal)
+set(CGAL_SOURCE_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
 
 # Boost and its components
 find_package( Boost REQUIRED )
