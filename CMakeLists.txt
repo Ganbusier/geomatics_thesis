@@ -39,7 +39,14 @@ include_directories( ${CMAKE_SOURCE_DIR}/include )
 # Creating entries for all C++ files from src directory
 FILE(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
-target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} ${CGAL_LIBRARIES} easy3d::viewer easy3d::algo easy3d::core)
+target_link_libraries(${PROJECT_NAME} 
+                      ${PCL_LIBRARIES} 
+                      ${CGAL_LIBRARIES} 
+                      easy3d::viewer 
+                      easy3d::algo 
+                      easy3d::core 
+                      easy3d::fileio 
+                      easy3d::util)
 # ##########################################################
 
 
