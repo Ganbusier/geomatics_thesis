@@ -12,6 +12,7 @@ set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
 set(Easy3D_PATH ${CMAKE_SOURCE_DIR}/3rd_party/Easy3D)
 set(Easy3D_BUILD_TUTORIALS OFF CACHE BOOL "Build Easy3D tutorials" FORCE)
 add_subdirectory(${Easy3D_PATH})
+set(Easy3D_DIR ${CMAKE_SOURCE_DIR}/build)
 
 # Boost
 find_package( Boost REQUIRED )
@@ -38,7 +39,7 @@ include_directories( ${CMAKE_SOURCE_DIR}/include )
 # Creating entries for all C++ files from src directory
 FILE(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
-target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} ${CGAL_LIBRARIES} ${Easy3D_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} ${CGAL_LIBRARIES} easy3d::viewer easy3d::algo easy3d::core)
 # ##########################################################
 
 
