@@ -10,6 +10,7 @@ set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
 
 # Easy3D
 set(Easy3D_PATH ${CMAKE_SOURCE_DIR}/3rd_party/Easy3D)
+set(Easy3D_BUILD_TUTORIALS OFF CACHE BOOL "Build Easy3D tutorials" FORCE)
 add_subdirectory(${Easy3D_PATH})
 
 # Boost
