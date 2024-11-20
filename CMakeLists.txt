@@ -4,9 +4,15 @@ project( geomatics_thesis )
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE Release)
+
+# CGAL
 set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
 
-# Boost and its components
+# Easy3D
+set(Easy3D_PATH ${CMAKE_SOURCE_DIR}/3rd_party/Easy3D)
+add_subdirectory(${Easy3D_PATH})
+
+# Boost
 find_package( Boost REQUIRED )
 
 if ( NOT Boost_FOUND )
@@ -14,7 +20,7 @@ if ( NOT Boost_FOUND )
   return()
 endif()
 
-# PCL and its components
+# PCL
 find_package(PCL REQUIRED)
 
 if ( NOT PCL_FOUND )
@@ -31,7 +37,7 @@ include_directories( ${CMAKE_SOURCE_DIR}/include )
 # Creating entries for all C++ files from src directory
 FILE(GLOB SRC_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
-target_link_libraries(${PROJECT_NAME} ${CGAL_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} ${CGAL_LIBRARIES} ${Easy3D_LIBRARIES})
 # ##########################################################
 
 
