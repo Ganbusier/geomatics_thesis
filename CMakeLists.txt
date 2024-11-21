@@ -34,10 +34,10 @@ include_directories(${PCL_INCLUDE_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
 # include for local directory
-include_directories( ${CMAKE_SOURCE_DIR}/include )
+# include_directories( ${CMAKE_SOURCE_DIR}/include )
 
 # Creating entries for all C++ files from src directory
-FILE(GLOB SRC_FILES src/*.cpp)
+FILE(GLOB SRC_FILES src/main.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_link_libraries(${PROJECT_NAME} 
                       ${PCL_LIBRARIES} 
