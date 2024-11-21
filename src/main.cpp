@@ -4,6 +4,7 @@
 #include <easy3d/core/point_cloud.h>
 #include <easy3d/fileio/point_cloud_io.h>
 #include <easy3d/renderer/drawable_points.h>
+#include <easy3d/renderer/drawable_lines.h>
 #include <easy3d/renderer/renderer.h>
 #include <easy3d/util/initializer.h>
 #include <easy3d/util/resource.h>
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
     // usage
     viewer.set_usage("'Ctrl + e': extract cylinders");
     viewer.bind(extract_cylinders, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
+    viewer.fit_screen();
 
     return viewer.run();
 }
@@ -71,6 +73,7 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
                                       normal_threshold, overlook_probability);
     if (num_cylinders > 0) {
         LOG(INFO) << "Detected " << num_cylinders << " cylinders";
+        auto cylinders = ransac.get_cylinders();
         auto segments = cloud->vertex_property<int>("v:primitive_index");
         const std::string color_name = "v:color-segments";
         auto coloring = cloud->vertex_property<vec3>(color_name, vec3(0.0f));
@@ -78,9 +81,23 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
 
         auto drawable = cloud->renderer()->get_points_drawable("vertices");
         drawable->set_property_coloring(State::VERTEX, color_name);
-
         drawable->update();
         viewer->update();
+
+        for (int i = 0; i < cylinders.size(); i++) {
+            auto cylinder = cylinders[i];
+            auto cylinder_drawable = model->renderer()->add_lines_drawable("cylinder" + std::to_string(i));
+            std::vector<vec3> cylinder_points = {
+                cylinder.position,
+                cylinder.position + cylinder.direction
+            };
+            std::vector<unsigned int> cylinder_indices = {0, 1};
+            cylinder_drawable->update_vertex_buffer(cylinder_points);
+            cylinder_drawable->update_element_buffer(cylinder_indices);
+            cylinder_drawable->set_line_width(cylinder.radius);
+            cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            viewer->update();
+        }
     }
     return true;
 }
