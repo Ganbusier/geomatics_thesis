@@ -5,6 +5,10 @@ project( geomatics_thesis )
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE Release)
 
+if (WIN32)
+  add_compile_options(-msse3 -march=native)
+endif()
+
 # CGAL
 set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
 
