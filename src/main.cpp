@@ -83,28 +83,22 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
         drawable->set_property_coloring(State::VERTEX, color_name);
         drawable->update();
         viewer->update();
-
+        
         for (int i = 0; i < cylinders.size(); i++) {
-            std::cout << "Cylinder " << i << ": " << cylinders[i].position << " "
-                      << cylinders[i].direction << " " << cylinders[i].radius << std::endl;
-            std::cout << "Cylinder " << i << ": " << cylinders[i].vertices.size() << std::endl;
-            // auto cylinder = cylinders[i];
-            // auto cylinder_drawable = model->renderer()->get_lines_drawable("cylinder" + std::to_string(i));
-            // if (!cylinder_drawable) {
-            //     cylinder_drawable = model->renderer()->add_lines_drawable("cylinder" + std::to_string(i));
-            // }
-            // std::vector<vec3> cylinder_points = {
-            //     cylinder.position,
-            //     cylinder.position + cylinder.direction
-            // };
-            // std::vector<unsigned int> cylinder_indices = {0, 1};
-            // cylinder_drawable->update_vertex_buffer(cylinder_points);
-            // cylinder_drawable->update_element_buffer(cylinder_indices);
-            // cylinder_drawable->set_visible(true);
-            // cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
-            // cylinder_drawable->set_line_width(cylinder.radius);
-            // cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
-            // viewer->update();
+            auto cylinder = cylinders[i];
+            auto cylinder_drawable = model->renderer()->add_lines_drawable("cylinder" + std::to_string(i));
+            std::vector<vec3> cylinder_points = {
+                cylinder.position - cylinder.direction,
+                cylinder.position + cylinder.direction
+            };
+            std::vector<unsigned int> cylinder_indices = {0, 1};
+            cylinder_drawable->update_vertex_buffer(cylinder_points);
+            cylinder_drawable->update_element_buffer(cylinder_indices);
+            cylinder_drawable->set_visible(true);
+            cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
+            cylinder_drawable->set_line_width(cylinder.radius);
+            cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            viewer->update();
         }
     }
     return true;
