@@ -1,3 +1,8 @@
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/IO/read_points.h>
+#include <CGAL/Point_with_normal_3.h>
+#include <CGAL/Shape_detection/Efficient_RANSAC.h>
+#include <CGAL/property_map.h>
 #include <easy3d/algo/point_cloud_normals.h>
 #include <easy3d/algo/point_cloud_ransac.h>
 #include <easy3d/core/model.h>
@@ -13,28 +18,20 @@
 #include <filesystem>
 #include <iostream>
 
-#include <CGAL/property_map.h>
-#include <CGAL/IO/read_points.h>
-#include <CGAL/Point_with_normal_3.h>
-#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
- 
-#include <CGAL/Shape_detection/Efficient_RANSAC.h>
- 
 // Type declarations.
-typedef CGAL::Exact_predicates_inexact_constructions_kernel  Kernel;
-typedef Kernel::FT                                           FT;
-typedef std::pair<Kernel::Point_3, Kernel::Vector_3>         Point_with_normal;
-typedef std::vector<Point_with_normal>                       Pwn_vector;
-typedef CGAL::First_of_pair_property_map<Point_with_normal>  Point_map;
+typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
+typedef Kernel::FT FT;
+typedef std::pair<Kernel::Point_3, Kernel::Vector_3> Point_with_normal;
+typedef std::vector<Point_with_normal> Pwn_vector;
+typedef CGAL::First_of_pair_property_map<Point_with_normal> Point_map;
 typedef CGAL::Second_of_pair_property_map<Point_with_normal> Normal_map;
- 
-typedef CGAL::Shape_detection::Efficient_RANSAC_traits
-<Kernel, Pwn_vector, Point_map, Normal_map>             Traits;
+
+typedef CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, Pwn_vector, Point_map, Normal_map>
+    Traits;
 typedef CGAL::Shape_detection::Efficient_RANSAC<Traits> Efficient_ransac;
-typedef CGAL::Shape_detection::Cylinder<Traits>         Cylinder;
-typedef CGAL::Shape_detection::Plane<Traits>            Plane;
-typedef CGAL::Shape_detection::Sphere<Traits>           Sphere;
- 
+typedef CGAL::Shape_detection::Cylinder<Traits> Cylinder;
+typedef CGAL::Shape_detection::Plane<Traits> Plane;
+typedef CGAL::Shape_detection::Sphere<Traits> Sphere;
 
 using namespace easy3d;
 
@@ -43,8 +40,8 @@ bool run_cgal_ransac(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
 bool reorient(Viewer* viewer, Model* model);
 
-std::vector<Drawable*> drawables; // store drawables added to the viewer
-int k_neighbors = 50; // k-nearest neighbors for normal estimation
+std::vector<Drawable*> drawables;  // store drawables added to the viewer
+int k_neighbors = 50;              // k-nearest neighbors for normal estimation
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -138,17 +135,24 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
     int num_cylinders = 0;
 
     std::vector<float> bitmap_resolutions = {0.01f, 0.02f, 0.05f};
-    std::vector<unsigned int> min_support_values = {20, 30, 40, 50};
+    std::vector<float> min_support_ratios = {0.01, 0.05, 0.1, 0.15, 0.2};
     std::vector<float> dist_threshold_values = {0.002f, 0.005f, 0.01f};
 
-    for (unsigned int& min_support : min_support_values) {
+    for (float& min_support_ratio : min_support_ratios) {
         for (float& dist_threshold : dist_threshold_values) {
             for (float& bitmap_resolution : bitmap_resolutions) {
+                unsigned int min_support = static_cast<unsigned int>(
+                    std::round(min_support_ratio * cloud->n_vertices()));
+
+                if (min_support < 3) min_support = 3;
+
                 LOG(INFO) << "Testing min support: " << min_support
                           << ", dist threshold: " << dist_threshold;
+
                 int detected_cylinders =
                     ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
                                   normal_threshold, overlook_probability);
+
                 if (detected_cylinders > num_cylinders) {
                     num_cylinders = detected_cylinders;
                     best_min_support = min_support;
@@ -329,7 +333,8 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             auto end_point = random_point + direction;
             auto radius = cylinder->radius();
             std::vector<vec3> cylinder_endpoints = {
-                vec3(random_point.x(), random_point.y(), random_point.z()), vec3(end_point.x(), end_point.y(), end_point.z())};
+                vec3(random_point.x(), random_point.y(), random_point.z()),
+                vec3(end_point.x(), end_point.y(), end_point.z())};
             std::vector<unsigned int> cylinder_indices = {0, 1};
             cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
             cylinder_drawable->update_element_buffer(cylinder_indices);
@@ -342,4 +347,3 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     }
     return true;
 }
-
