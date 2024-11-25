@@ -13,11 +13,35 @@
 #include <filesystem>
 #include <iostream>
 
+#include <CGAL/property_map.h>
+#include <CGAL/IO/read_points.h>
+#include <CGAL/Point_with_normal_3.h>
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+ 
+#include <CGAL/Shape_detection/Efficient_RANSAC.h>
+ 
+// Type declarations.
+typedef CGAL::Exact_predicates_inexact_constructions_kernel  Kernel;
+typedef Kernel::FT                                           FT;
+typedef std::pair<Kernel::Point_3, Kernel::Vector_3>         Point_with_normal;
+typedef std::vector<Point_with_normal>                       Pwn_vector;
+typedef CGAL::First_of_pair_property_map<Point_with_normal>  Point_map;
+typedef CGAL::Second_of_pair_property_map<Point_with_normal> Normal_map;
+ 
+typedef CGAL::Shape_detection::Efficient_RANSAC_traits
+<Kernel, Pwn_vector, Point_map, Normal_map>             Traits;
+typedef CGAL::Shape_detection::Efficient_RANSAC<Traits> Efficient_ransac;
+typedef CGAL::Shape_detection::Cylinder<Traits>         Cylinder;
+typedef CGAL::Shape_detection::Plane<Traits>            Plane;
+typedef CGAL::Shape_detection::Sphere<Traits>           Sphere;
+ 
+
 using namespace easy3d;
 
 bool extract_cylinders(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
 bool reorient(Viewer* viewer, Model* model);
+bool run_cgal_ransac(Viewer* viewer, Model* model);
 
 std::vector<Drawable*> drawables; // store drawables added to the viewer
 
@@ -41,7 +65,7 @@ int main(int argc, char** argv) {
 
     // usage
     viewer.set_usage("'Ctrl + e': extract cylinders");
-    viewer.bind(extract_cylinders, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
+    viewer.bind(run_cgal_ransac, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
     viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
     viewer.bind(reorient, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
 
@@ -207,3 +231,99 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
     }
     return true;
 }
+
+bool run_cgal_ransac(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    if (!normals) {
+        bool estimate_normals = PointCloudNormals::estimate(cloud, 20);
+        if (!estimate_normals) {
+            LOG(WARNING) << "No normals found or estimated for point cloud";
+            return false;
+        }
+    }
+
+    Pwn_vector pwn_vector;
+
+    for (const auto& vertex : cloud->vertices()) {
+        const easy3d::vec3& p = points[vertex];
+        const easy3d::vec3& n = normals[vertex];
+        pwn_vector.emplace_back(Kernel::Point_3(p[0], p[1], p[2]),
+                                Kernel::Vector_3(n[0], n[1], n[2]));
+    }
+
+    Efficient_ransac ransac;
+
+    ransac.set_input(pwn_vector);
+
+    ransac.add_shape_factory<Cylinder>();
+
+    Efficient_ransac::Parameters params;
+    params.normal_threshold = 0.8;
+    params.probability = 0.001;
+    params.min_points = 20;
+    params.epsilon = 0.01;
+    params.cluster_epsilon = 0.02;
+
+    ransac.detect(params);
+
+    auto cylinders = ransac.shapes();
+    int num_cylinders = cylinders.size();
+
+    if (num_cylinders > 0) {
+        LOG(INFO) << "Detected " << num_cylinders << " cylinders";
+
+        // clear previous viewer drawables
+        for (auto& drawable : drawables) {
+            viewer->delete_drawable(drawable);
+        }
+        drawables.clear();
+
+        // draw bbox and cylinders
+        for (auto& cylinder : cylinders) {
+            const std::vector<std::size_t>& vertices = cylinder->indices_of_assigned_points();
+            std::vector<vec3> cylinder_points;
+            for (auto& vertex : vertices) {
+                cylinder_points.push_back(points[PointCloud::Vertex(vertex)]);
+            }
+
+            auto bbox_drawable = new LinesDrawable("bbox");
+            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+            float xmin = box.min_coord(0);
+            float xmax = box.max_coord(0);
+            float ymin = box.min_coord(1);
+            float ymax = box.max_coord(1);
+            float zmin = box.min_coord(2);
+            float zmax = box.max_coord(2);
+            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            bbox_drawable->update_vertex_buffer(bbox_points);
+            bbox_drawable->update_element_buffer(bbox_indices);
+            bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+            bbox_drawable->set_line_width(5.0f);
+            viewer->add_drawable(bbox_drawable);
+            drawables.push_back(bbox_drawable);
+
+            // auto cylinder_drawable = new LinesDrawable("cylinder");
+            // std::vector<vec3> cylinder_endpoints = {
+            //     cylinder.position, cylinder.position + cylinder.direction * 100.0f};
+            // std::vector<unsigned int> cylinder_indices = {0, 1};
+            // cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
+            // cylinder_drawable->update_element_buffer(cylinder_indices);
+            // cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
+            // cylinder_drawable->set_line_width(cylinder.radius);
+            // cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            // viewer->add_drawable(cylinder_drawable);
+            // drawables.push_back(cylinder_drawable);
+        }
+    }
+    return true;
+}
+
