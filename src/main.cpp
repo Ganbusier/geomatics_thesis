@@ -44,6 +44,7 @@ bool estimate_normals(Viewer* viewer, Model* model);
 bool reorient(Viewer* viewer, Model* model);
 
 std::vector<Drawable*> drawables; // store drawables added to the viewer
+int k_neighbors = 50; // k-nearest neighbors for normal estimation
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -79,7 +80,7 @@ int main(int argc, char** argv) {
 bool estimate_normals(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
     auto cloud = dynamic_cast<PointCloud*>(model);
-    if (PointCloudNormals::estimate(cloud, 50)) {
+    if (PointCloudNormals::estimate(cloud, k_neighbors)) {
         auto normals = cloud->get_vertex_property<vec3>("v:normal");
         auto drawable = cloud->renderer()->get_points_drawable("vertices");
         // Upload the vertex normals to the GPU.
@@ -100,7 +101,7 @@ bool reorient(Viewer* viewer, Model* model) {
         return false;
     }
 
-    if (PointCloudNormals::reorient(cloud)) {
+    if (PointCloudNormals::reorient(cloud, k_neighbors)) {
         auto drawable = cloud->renderer()->get_points_drawable("vertices");
         // Upload the vertex normals to the GPU.
         drawable->update_normal_buffer(normals.vector());
@@ -117,7 +118,7 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
     auto normals = cloud->get_vertex_property<vec3>("v:normal");
     auto points = cloud->get_vertex_property<vec3>("v:point");
     if (!normals) {
-        bool estimate_normals = PointCloudNormals::estimate(cloud, 20);
+        bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
         if (!estimate_normals) {
             LOG(WARNING) << "No normals found or estimated for point cloud";
             return false;
@@ -240,7 +241,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     auto normals = cloud->get_vertex_property<vec3>("v:normal");
     auto points = cloud->get_vertex_property<vec3>("v:point");
     if (!normals) {
-        bool estimate_normals = PointCloudNormals::estimate(cloud, 20);
+        bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
         normals = cloud->get_vertex_property<vec3>("v:normal");
         if (!estimate_normals) {
             LOG(WARNING) << "No normals found or estimated for point cloud";
