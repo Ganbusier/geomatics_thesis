@@ -38,10 +38,10 @@ typedef CGAL::Shape_detection::Sphere<Traits>           Sphere;
 
 using namespace easy3d;
 
-bool extract_cylinders(Viewer* viewer, Model* model);
+bool run_easy3d_ransac(Viewer* viewer, Model* model);
+bool run_cgal_ransac(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
 bool reorient(Viewer* viewer, Model* model);
-bool run_cgal_ransac(Viewer* viewer, Model* model);
 
 std::vector<Drawable*> drawables; // store drawables added to the viewer
 
@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
 
     // usage
     viewer.set_usage("'Ctrl + e': extract cylinders");
+    viewer.bind(run_easy3d_ransac, model, Viewer::KEY_E, Viewer::MODIF_SHIFT);
     viewer.bind(run_cgal_ransac, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
     viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
     viewer.bind(reorient, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
@@ -109,7 +110,7 @@ bool reorient(Viewer* viewer, Model* model) {
         return false;
 }
 
-bool extract_cylinders(Viewer* viewer, Model* model) {
+bool run_easy3d_ransac(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
 
     auto cloud = dynamic_cast<PointCloud*>(model);
@@ -240,21 +241,23 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     auto points = cloud->get_vertex_property<vec3>("v:point");
     if (!normals) {
         bool estimate_normals = PointCloudNormals::estimate(cloud, 20);
+        normals = cloud->get_vertex_property<vec3>("v:normal");
         if (!estimate_normals) {
             LOG(WARNING) << "No normals found or estimated for point cloud";
             return false;
         }
     }
 
+    LOG(INFO) << "Constructing point_with_normal_vector";
     Pwn_vector pwn_vector;
-
     for (const auto& vertex : cloud->vertices()) {
-        const easy3d::vec3& p = points[vertex];
-        const easy3d::vec3& n = normals[vertex];
+        const easy3d::vec3 p = points[vertex];
+        const easy3d::vec3 n = normals[vertex];
         pwn_vector.emplace_back(Kernel::Point_3(p[0], p[1], p[2]),
                                 Kernel::Vector_3(n[0], n[1], n[2]));
     }
 
+    LOG(INFO) << "Running CGAL RANSAC";
     Efficient_ransac ransac;
 
     ransac.set_input(pwn_vector);
@@ -265,17 +268,23 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     params.normal_threshold = 0.8;
     params.probability = 0.001;
     params.min_points = 20;
-    params.epsilon = 0.01;
-    params.cluster_epsilon = 0.02;
+    params.epsilon = 0.5;
+    params.cluster_epsilon = 0.5;
 
     ransac.detect(params);
 
-    auto cylinders = ransac.shapes();
+    auto shapes = ransac.shapes();
+    std::vector<Cylinder*> cylinders;
+    for (auto& shape : shapes) {
+        if (Cylinder* cylinder = dynamic_cast<Cylinder*>(shape.get())) {
+            cylinders.push_back(cylinder);
+        }
+    }
     int num_cylinders = cylinders.size();
 
-    if (num_cylinders > 0) {
-        LOG(INFO) << "Detected " << num_cylinders << " cylinders";
+    LOG(INFO) << "Detected " << num_cylinders << " cylinders";
 
+    if (num_cylinders > 0) {
         // clear previous viewer drawables
         for (auto& drawable : drawables) {
             viewer->delete_drawable(drawable);
@@ -287,7 +296,8 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             const std::vector<std::size_t>& vertices = cylinder->indices_of_assigned_points();
             std::vector<vec3> cylinder_points;
             for (auto& vertex : vertices) {
-                cylinder_points.push_back(points[PointCloud::Vertex(vertex)]);
+                auto& point = pwn_vector.at(vertex).first;
+                cylinder_points.push_back(vec3(point.x(), point.y(), point.z()));
             }
 
             auto bbox_drawable = new LinesDrawable("bbox");
@@ -311,17 +321,22 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             viewer->add_drawable(bbox_drawable);
             drawables.push_back(bbox_drawable);
 
-            // auto cylinder_drawable = new LinesDrawable("cylinder");
-            // std::vector<vec3> cylinder_endpoints = {
-            //     cylinder.position, cylinder.position + cylinder.direction * 100.0f};
-            // std::vector<unsigned int> cylinder_indices = {0, 1};
-            // cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
-            // cylinder_drawable->update_element_buffer(cylinder_indices);
-            // cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
-            // cylinder_drawable->set_line_width(cylinder.radius);
-            // cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
-            // viewer->add_drawable(cylinder_drawable);
-            // drawables.push_back(cylinder_drawable);
+            auto cylinder_drawable = new LinesDrawable("cylinder");
+            auto axis = cylinder->axis();
+            auto random_point = axis.point();
+            auto direction = axis.to_vector();
+            auto end_point = random_point + direction;
+            auto radius = cylinder->radius();
+            std::vector<vec3> cylinder_endpoints = {
+                vec3(random_point.x(), random_point.y(), random_point.z()), vec3(end_point.x(), end_point.y(), end_point.z())};
+            std::vector<unsigned int> cylinder_indices = {0, 1};
+            cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
+            cylinder_drawable->update_element_buffer(cylinder_indices);
+            cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
+            cylinder_drawable->set_line_width(radius);
+            cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            viewer->add_drawable(cylinder_drawable);
+            drawables.push_back(cylinder_drawable);
         }
     }
     return true;
