@@ -30,7 +30,6 @@ int main(int argc, char** argv) {
 
     Viewer viewer("Geomatics Thesis");
     Model* model = viewer.add_model(input_file_path, true);
-
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
     drawable->set_uniform_coloring(vec4(0.6f, 0.6f, 1.0f, 1.0f));
@@ -51,6 +50,7 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
 
     auto cloud = dynamic_cast<PointCloud*>(model);
     auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
     if (!normals) {
         bool estimate_normals = PointCloudNormals::estimate(cloud);
         if (!estimate_normals) {
@@ -61,9 +61,9 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
 
     // set ransac and parameters
     PrimitivesRansac ransac;
-    unsigned int min_support = 1000;
-    float dist_threshold = 0.005f;
-    float bitmap_resolution = 0.02f;
+    unsigned int min_support = 30;
+    float dist_threshold = 0.02f;
+    float bitmap_resolution = 0.01f;
     float normal_threshold = 0.8f;
     float overlook_probability = 0.001f;
 
@@ -84,21 +84,52 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
         drawable->update();
         viewer->update();
         
+        // draw cylinders
         for (int i = 0; i < cylinders.size(); i++) {
             auto cylinder = cylinders[i];
-            auto cylinder_drawable = model->renderer()->add_lines_drawable("cylinder" + std::to_string(i));
-            std::vector<vec3> cylinder_points = {
-                cylinder.position - cylinder.direction,
-                cylinder.position + cylinder.direction
+            std::vector<int>& vertices = cylinder.vertices;
+            std::vector<vec3> cylinder_points;
+            for (int& vertex : vertices) {
+                cylinder_points.push_back(points[PointCloud::Vertex(vertex)]);
+            }
+
+            auto bbox_drawable = new LinesDrawable("bbox");
+            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+            float xmin = box.min_coord(0);
+            float xmax = box.max_coord(0);
+            float ymin = box.min_coord(1);
+            float ymax = box.max_coord(1);
+            float zmin = box.min_coord(2);
+            float zmax = box.max_coord(2);
+            const std::vector<vec3> bbox_points = {
+                    vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+                    vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+                    vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+                    vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)
+            };
+            const std::vector<unsigned int> bbox_indices = {
+                    0, 1, 2, 3, 4, 5, 6, 7,
+                    0, 2, 4, 6, 1, 3, 5, 7,
+                    0, 4, 2, 6, 1, 5, 3, 7
+            };
+            bbox_drawable->update_vertex_buffer(bbox_points);
+            bbox_drawable->update_element_buffer(bbox_indices);
+            bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+            bbox_drawable->set_line_width(5.0f);
+            viewer->add_drawable(bbox_drawable);
+
+            auto cylinder_drawable = new LinesDrawable("cylinder");
+            std::vector<vec3> cylinder_endpoints = {
+                cylinder.position,
+                cylinder.position + cylinder.direction * 100.0f
             };
             std::vector<unsigned int> cylinder_indices = {0, 1};
-            cylinder_drawable->update_vertex_buffer(cylinder_points);
+            cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
             cylinder_drawable->update_element_buffer(cylinder_indices);
-            cylinder_drawable->set_visible(true);
             cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
             cylinder_drawable->set_line_width(cylinder.radius);
             cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
-            viewer->update();
+            viewer->add_drawable(cylinder_drawable);
         }
     }
     return true;
