@@ -38,7 +38,6 @@ using namespace easy3d;
 bool run_easy3d_ransac(Viewer* viewer, Model* model);
 bool run_cgal_ransac(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
-bool reorient(Viewer* viewer, Model* model);
 
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
 int k_neighbors = 50;              // k-nearest neighbors for normal estimation
@@ -62,11 +61,12 @@ int main(int argc, char** argv) {
     drawable->set_point_size(5.0f);
 
     // usage
-    viewer.set_usage("'Ctrl + e': extract cylinders");
+    viewer.set_usage("'Ctrl + n': estimate normals");
+    viewer.set_usage("'Ctrl + e': run CGAL RANSAC");
+    viewer.set_usage("'Shift + e': run Easy3D RANSAC");
     viewer.bind(run_easy3d_ransac, model, Viewer::KEY_E, Viewer::MODIF_SHIFT);
     viewer.bind(run_cgal_ransac, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
     viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
-    viewer.bind(reorient, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
 
     // fit screen
     viewer.fit_screen();
@@ -79,26 +79,6 @@ bool estimate_normals(Viewer* viewer, Model* model) {
     auto cloud = dynamic_cast<PointCloud*>(model);
     if (PointCloudNormals::estimate(cloud, k_neighbors)) {
         auto normals = cloud->get_vertex_property<vec3>("v:normal");
-        auto drawable = cloud->renderer()->get_points_drawable("vertices");
-        // Upload the vertex normals to the GPU.
-        drawable->update_normal_buffer(normals.vector());
-        viewer->update();
-        return true;
-    } else
-        return false;
-}
-
-bool reorient(Viewer* viewer, Model* model) {
-    if (!viewer || !model) return false;
-
-    auto cloud = dynamic_cast<PointCloud*>(model);
-    auto normals = cloud->get_vertex_property<vec3>("v:normal");
-    if (!normals) {
-        LOG(WARNING) << "normal information does not exist";
-        return false;
-    }
-
-    if (PointCloudNormals::reorient(cloud, k_neighbors)) {
         auto drawable = cloud->renderer()->get_points_drawable("vertices");
         // Upload the vertex normals to the GPU.
         drawable->update_normal_buffer(normals.vector());
@@ -129,46 +109,53 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
 
     float normal_threshold = 0.8f;
     float overlook_probability = 0.001f;
-    float best_bitmap_resolution = 0.0f;
-    unsigned int best_min_support = 0.0f;
-    float best_dist_threshold = 0.0f;
-    int num_cylinders = 0;
+    float bitmap_resolution = 0.05f;
+    float dist_threshold = 0.01f;
+    unsigned int min_support = 20;
+    
+    int num_cylinders = ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
+                                      normal_threshold, overlook_probability);
 
-    std::vector<float> bitmap_resolutions = {0.01f, 0.02f, 0.05f};
-    std::vector<float> min_support_ratios = {0.01, 0.05, 0.1, 0.15, 0.2};
-    std::vector<float> dist_threshold_values = {0.002f, 0.005f, 0.01f};
+    // float best_bitmap_resolution = 0.0f;
+    // unsigned int best_min_support = 0.0f;
+    // float best_dist_threshold = 0.0f;
+    // int num_cylinders = 0;
 
-    for (float& min_support_ratio : min_support_ratios) {
-        for (float& dist_threshold : dist_threshold_values) {
-            for (float& bitmap_resolution : bitmap_resolutions) {
-                unsigned int min_support = static_cast<unsigned int>(
-                    std::round(min_support_ratio * cloud->n_vertices()));
+    // std::vector<float> bitmap_resolutions = {0.01f, 0.02f, 0.05f};
+    // std::vector<float> min_support_ratios = {0.05, 0.1, 0.15, 0.2};
+    // std::vector<float> dist_threshold_values = {0.002f, 0.005f, 0.01f};
 
-                if (min_support < 3) min_support = 3;
+    // for (float& min_support_ratio : min_support_ratios) {
+    //     for (float& dist_threshold : dist_threshold_values) {
+    //         for (float& bitmap_resolution : bitmap_resolutions) {
+    //             unsigned int min_support = static_cast<unsigned int>(
+    //                 std::round(min_support_ratio * cloud->n_vertices()));
 
-                LOG(INFO) << "Testing min support: " << min_support
-                          << ", dist threshold: " << dist_threshold;
+    //             if (min_support < 3) min_support = 3;
 
-                int detected_cylinders =
-                    ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
-                                  normal_threshold, overlook_probability);
+    //             LOG(INFO) << "Testing min support: " << min_support
+    //                       << ", dist threshold: " << dist_threshold;
 
-                if (detected_cylinders > num_cylinders) {
-                    num_cylinders = detected_cylinders;
-                    best_min_support = min_support;
-                    best_dist_threshold = dist_threshold;
-                    best_bitmap_resolution = bitmap_resolution;
-                }
-            }
-        }
-    }
+    //             int detected_cylinders =
+    //                 ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
+    //                               normal_threshold, overlook_probability);
 
-    LOG(INFO) << "Best min support: " << best_min_support
-              << ", best dist threshold: " << best_dist_threshold
-              << ", best bitmap resolution: " << best_bitmap_resolution;
+    //             if (detected_cylinders > num_cylinders) {
+    //                 num_cylinders = detected_cylinders;
+    //                 best_min_support = min_support;
+    //                 best_dist_threshold = dist_threshold;
+    //                 best_bitmap_resolution = bitmap_resolution;
+    //             }
+    //         }
+    //     }
+    // }
 
-    num_cylinders = ransac.detect(cloud, best_min_support, best_dist_threshold,
-                                  best_bitmap_resolution, normal_threshold, overlook_probability);
+    // LOG(INFO) << "Best min support: " << best_min_support
+    //           << ", best dist threshold: " << best_dist_threshold
+    //           << ", best bitmap resolution: " << best_bitmap_resolution;
+
+    // num_cylinders = ransac.detect(cloud, best_min_support, best_dist_threshold,
+    //                               best_bitmap_resolution, normal_threshold, overlook_probability);
 
     if (num_cylinders > 0) {
         LOG(INFO) << "Detected " << num_cylinders << " cylinders";
@@ -271,10 +258,10 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
     Efficient_ransac::Parameters params;
     params.normal_threshold = 0.8;
-    params.probability = 0.001;
+    params.probability = 0.01;
     params.min_points = 20;
-    params.epsilon = 0.5;
-    params.cluster_epsilon = 0.5;
+    params.epsilon = 0.7;
+    params.cluster_epsilon = 1.0;
 
     ransac.detect(params);
 
