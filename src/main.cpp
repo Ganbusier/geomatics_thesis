@@ -3,8 +3,8 @@
 #include <easy3d/core/model.h>
 #include <easy3d/core/point_cloud.h>
 #include <easy3d/fileio/point_cloud_io.h>
-#include <easy3d/renderer/drawable_points.h>
 #include <easy3d/renderer/drawable_lines.h>
+#include <easy3d/renderer/drawable_points.h>
 #include <easy3d/renderer/renderer.h>
 #include <easy3d/util/initializer.h>
 #include <easy3d/util/resource.h>
@@ -16,6 +16,10 @@
 using namespace easy3d;
 
 bool extract_cylinders(Viewer* viewer, Model* model);
+bool estimate_normals(Viewer* viewer, Model* model);
+bool reorient(Viewer* viewer, Model* model);
+
+std::vector<Drawable*> drawables; // store drawables added to the viewer
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -38,39 +42,104 @@ int main(int argc, char** argv) {
     // usage
     viewer.set_usage("'Ctrl + e': extract cylinders");
     viewer.bind(extract_cylinders, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
+    viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
+    viewer.bind(reorient, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
+
+    // fit screen
     viewer.fit_screen();
 
     return viewer.run();
 }
 
-bool extract_cylinders(Viewer* viewer, Model* model) {
-    if (!viewer || !model) {
+bool estimate_normals(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    if (PointCloudNormals::estimate(cloud, 50)) {
+        auto normals = cloud->get_vertex_property<vec3>("v:normal");
+        auto drawable = cloud->renderer()->get_points_drawable("vertices");
+        // Upload the vertex normals to the GPU.
+        drawable->update_normal_buffer(normals.vector());
+        viewer->update();
+        return true;
+    } else
+        return false;
+}
+
+bool reorient(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    if (!normals) {
+        LOG(WARNING) << "normal information does not exist";
         return false;
     }
+
+    if (PointCloudNormals::reorient(cloud)) {
+        auto drawable = cloud->renderer()->get_points_drawable("vertices");
+        // Upload the vertex normals to the GPU.
+        drawable->update_normal_buffer(normals.vector());
+        viewer->update();
+        return true;
+    } else
+        return false;
+}
+
+bool extract_cylinders(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
 
     auto cloud = dynamic_cast<PointCloud*>(model);
     auto normals = cloud->get_vertex_property<vec3>("v:normal");
     auto points = cloud->get_vertex_property<vec3>("v:point");
     if (!normals) {
-        bool estimate_normals = PointCloudNormals::estimate(cloud);
+        bool estimate_normals = PointCloudNormals::estimate(cloud, 20);
         if (!estimate_normals) {
             LOG(WARNING) << "No normals found or estimated for point cloud";
             return false;
         }
     }
 
-    // set ransac and parameters
+    // iterate over different parameters for RANSAC
     PrimitivesRansac ransac;
-    unsigned int min_support = 30;
-    float dist_threshold = 0.02f;
-    float bitmap_resolution = 0.01f;
+
+    ransac.add_primitive_type(PrimitivesRansac::CYLINDER);
+
     float normal_threshold = 0.8f;
     float overlook_probability = 0.001f;
+    float best_bitmap_resolution = 0.0f;
+    unsigned int best_min_support = 0.0f;
+    float best_dist_threshold = 0.0f;
+    int num_cylinders = 0;
 
-    // detect cylinders
-    ransac.add_primitive_type(PrimitivesRansac::CYLINDER);
-    int num_cylinders = ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
-                                      normal_threshold, overlook_probability);
+    std::vector<float> bitmap_resolutions = {0.01f, 0.02f, 0.05f};
+    std::vector<unsigned int> min_support_values = {20, 30, 40, 50};
+    std::vector<float> dist_threshold_values = {0.002f, 0.005f, 0.01f};
+
+    for (unsigned int& min_support : min_support_values) {
+        for (float& dist_threshold : dist_threshold_values) {
+            for (float& bitmap_resolution : bitmap_resolutions) {
+                LOG(INFO) << "Testing min support: " << min_support
+                          << ", dist threshold: " << dist_threshold;
+                int detected_cylinders =
+                    ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
+                                  normal_threshold, overlook_probability);
+                if (detected_cylinders > num_cylinders) {
+                    num_cylinders = detected_cylinders;
+                    best_min_support = min_support;
+                    best_dist_threshold = dist_threshold;
+                    best_bitmap_resolution = bitmap_resolution;
+                }
+            }
+        }
+    }
+
+    LOG(INFO) << "Best min support: " << best_min_support
+              << ", best dist threshold: " << best_dist_threshold
+              << ", best bitmap resolution: " << best_bitmap_resolution;
+
+    num_cylinders = ransac.detect(cloud, best_min_support, best_dist_threshold,
+                                  best_bitmap_resolution, normal_threshold, overlook_probability);
+
     if (num_cylinders > 0) {
         LOG(INFO) << "Detected " << num_cylinders << " cylinders";
         auto cylinders = ransac.get_cylinders();
@@ -83,10 +152,19 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
         drawable->set_property_coloring(State::VERTEX, color_name);
         drawable->update();
         viewer->update();
-        
-        // draw cylinders
+
+        // clear previous viewer drawables
+        for (auto& drawable : drawables) {
+            viewer->delete_drawable(drawable);
+        }
+        drawables.clear();
+
+        // draw bbox and cylinders
         for (int i = 0; i < cylinders.size(); i++) {
             auto cylinder = cylinders[i];
+            LOG(INFO) << "Cylinder " << i << ": " << cylinder.position << " -- "
+                      << cylinder.direction << " -- " << cylinder.radius << " -- "
+                      << cylinder.vertices.size();
             std::vector<int>& vertices = cylinder.vertices;
             std::vector<vec3> cylinder_points;
             for (int& vertex : vertices) {
@@ -101,28 +179,22 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
             float ymax = box.max_coord(1);
             float zmin = box.min_coord(2);
             float zmax = box.max_coord(2);
-            const std::vector<vec3> bbox_points = {
-                    vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
-                    vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
-                    vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
-                    vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)
-            };
-            const std::vector<unsigned int> bbox_indices = {
-                    0, 1, 2, 3, 4, 5, 6, 7,
-                    0, 2, 4, 6, 1, 3, 5, 7,
-                    0, 4, 2, 6, 1, 5, 3, 7
-            };
+            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
             bbox_drawable->update_vertex_buffer(bbox_points);
             bbox_drawable->update_element_buffer(bbox_indices);
             bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
             bbox_drawable->set_line_width(5.0f);
             viewer->add_drawable(bbox_drawable);
+            drawables.push_back(bbox_drawable);
 
             auto cylinder_drawable = new LinesDrawable("cylinder");
             std::vector<vec3> cylinder_endpoints = {
-                cylinder.position,
-                cylinder.position + cylinder.direction * 100.0f
-            };
+                cylinder.position, cylinder.position + cylinder.direction * 100.0f};
             std::vector<unsigned int> cylinder_indices = {0, 1};
             cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
             cylinder_drawable->update_element_buffer(cylinder_indices);
@@ -130,6 +202,7 @@ bool extract_cylinders(Viewer* viewer, Model* model) {
             cylinder_drawable->set_line_width(cylinder.radius);
             cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
             viewer->add_drawable(cylinder_drawable);
+            drawables.push_back(cylinder_drawable);
         }
     }
     return true;
