@@ -9,6 +9,14 @@ if (WIN32)
   add_compile_options(-msse3 -march=native)
 endif()
 
+# Boost
+find_package( Boost REQUIRED )
+
+if ( NOT Boost_FOUND )
+  message(STATUS "This project requires the Boost library, and will not be compiled.")
+  return()
+endif()
+
 # CGAL
 set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
 
@@ -17,14 +25,6 @@ set(Easy3D_PATH ${CMAKE_SOURCE_DIR}/3rd_party/Easy3D)
 set(Easy3D_BUILD_TUTORIALS OFF CACHE BOOL "Build Easy3D tutorials" FORCE)
 add_subdirectory(${Easy3D_PATH})
 set(Easy3D_DIR ${CMAKE_SOURCE_DIR}/build)
-
-# Boost
-find_package( Boost REQUIRED )
-
-if ( NOT Boost_FOUND )
-  message(STATUS "This project requires the Boost library, and will not be compiled.")
-  return()
-endif()
 
 # PCL
 find_package(PCL REQUIRED)
