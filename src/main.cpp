@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
     drawable->set_uniform_coloring(vec4(0.6f, 0.6f, 1.0f, 1.0f));
-    drawable->set_point_size(5.0f);
+    drawable->set_point_size(10.0f);
 
     // usage
     viewer.set_usage("'Ctrl + n': estimate normals");
@@ -282,6 +282,26 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             viewer->delete_drawable(drawable);
         }
         drawables.clear();
+
+        // add new property about primitive index to point cloud
+        auto segments = cloud->vertex_property<int>("v:primitive_index");
+        for (size_t i = 0; i < cylinders.size(); i++) {
+            auto cylinder = cylinders[i];
+            const std::vector<std::size_t>& indices = cylinder->indices_of_assigned_points();
+            for (auto& index : indices) {
+                PointCloud::Vertex v(index);
+                segments[v] = i;
+            }
+        }
+        const std::string color_name = "v:color-segments";
+        auto coloring = cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        Renderer::color_from_segmentation(cloud, segments, coloring);
+
+        // draw points
+        auto drawable = cloud->renderer()->get_points_drawable("vertices");
+        drawable->set_property_coloring(State::VERTEX, color_name);
+        drawable->update();
+        viewer->update();
 
         // draw bbox and cylinders
         for (auto& cylinder : cylinders) {
