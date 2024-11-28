@@ -58,12 +58,14 @@ int main(int argc, char** argv) {
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
     drawable->set_uniform_coloring(vec4(0.6f, 0.6f, 1.0f, 1.0f));
+    drawable->set_impostor_type(PointsDrawable::SPHERE);
     drawable->set_point_size(10.0f);
 
     // usage
-    viewer.set_usage("'Ctrl + n': estimate normals");
-    viewer.set_usage("'Ctrl + e': run CGAL RANSAC");
-    viewer.set_usage("'Shift + e': run Easy3D RANSAC");
+    viewer.set_usage(
+        "'Ctrl + n': estimate normals\n"
+        "'Ctrl + e': run CGAL RANSAC\n"
+        "'Shift + e': run Easy3D RANSAC");
     viewer.bind(run_easy3d_ransac, model, Viewer::KEY_E, Viewer::MODIF_SHIFT);
     viewer.bind(run_cgal_ransac, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
     viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
@@ -112,7 +114,7 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
     float bitmap_resolution = 0.05f;
     float dist_threshold = 0.01f;
     unsigned int min_support = 20;
-    
+
     int num_cylinders = ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
                                       normal_threshold, overlook_probability);
 
@@ -155,7 +157,8 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
     //           << ", best bitmap resolution: " << best_bitmap_resolution;
 
     // num_cylinders = ransac.detect(cloud, best_min_support, best_dist_threshold,
-    //                               best_bitmap_resolution, normal_threshold, overlook_probability);
+    //                               best_bitmap_resolution, normal_threshold,
+    //                               overlook_probability);
 
     if (num_cylinders > 0) {
         LOG(INFO) << "Detected " << num_cylinders << " cylinders";
@@ -261,7 +264,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     params.probability = 0.01;
     params.min_points = 20;
     params.epsilon = 0.7;
-    params.cluster_epsilon = 1.0;
+    params.cluster_epsilon = 1.4;
 
     ransac.detect(params);
 
@@ -274,7 +277,8 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     }
     int num_cylinders = cylinders.size();
 
-    LOG(INFO) << "Detected " << num_cylinders << " cylinders";
+    LOG(INFO) << "Detected " << num_cylinders << " cylinders, "
+              << ransac.number_of_unassigned_points() << " unassigned points.";
 
     if (num_cylinders > 0) {
         // clear previous viewer drawables
@@ -287,6 +291,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
         auto segments = cloud->vertex_property<int>("v:primitive_index");
         for (size_t i = 0; i < cylinders.size(); i++) {
             auto cylinder = cylinders[i];
+            auto color = random_color();
             const std::vector<std::size_t>& indices = cylinder->indices_of_assigned_points();
             for (auto& index : indices) {
                 PointCloud::Vertex v(index);
