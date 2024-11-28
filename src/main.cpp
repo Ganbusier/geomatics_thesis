@@ -255,7 +255,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     LOG(INFO) << "Running CGAL RANSAC";
     Efficient_ransac ransac;
 
-    ransac.set_input(pwn_vector);
+    ransac.set_input(pwn_vector); // the pwn_vector will be reordered after RANSAC
 
     ransac.add_shape_factory<Cylinder>();
 
@@ -287,34 +287,58 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
         }
         drawables.clear();
 
-        // add new property about primitive index to point cloud
-        auto segments = cloud->vertex_property<int>("v:primitive_index");
+        // hide default point cloud
+        auto default_drawable = cloud->renderer()->get_points_drawable("vertices");
+        default_drawable->set_visible(false);
+        default_drawable->update();
+        viewer->update();
+
+        // build new point cloud
+        PointCloud* new_cloud = new PointCloud;
+        auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
+        auto new_normals = new_cloud->add_vertex_property<vec3>("v:normal");
+        // initialize segments property to -1 which means unknown primitive type
+        auto segments = new_cloud->add_vertex_property<int>("v:primitive_index", -1);
+        for (size_t i = 0; i < pwn_vector.size(); i++) {
+            auto pwn = pwn_vector[i];
+            auto& point = pwn.first;
+            auto& normal = pwn.second;
+            new_cloud->add_vertex(vec3(point.x(), point.y(), point.z()));
+            new_normals[PointCloud::Vertex(i)] = vec3(normal.x(), normal.y(), normal.z());
+        }
+
         for (size_t i = 0; i < cylinders.size(); i++) {
             auto cylinder = cylinders[i];
-            auto color = random_color();
             const std::vector<std::size_t>& indices = cylinder->indices_of_assigned_points();
             for (auto& index : indices) {
                 PointCloud::Vertex v(index);
                 segments[v] = i;
             }
         }
-        const std::string color_name = "v:color-segments";
-        auto coloring = cloud->vertex_property<vec3>(color_name, vec3(0.0f));
-        Renderer::color_from_segmentation(cloud, segments, coloring);
 
-        // draw points
-        auto drawable = cloud->renderer()->get_points_drawable("vertices");
+        // draw new point cloud
+        const std::string color_name = "v:color-segments";
+        auto coloring = new_cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        Renderer::color_from_segmentation(new_cloud, segments, coloring);
+
+        auto drawable = new PointsDrawable("vertices");
         drawable->set_property_coloring(State::VERTEX, color_name);
-        drawable->update();
-        viewer->update();
+        drawable->set_impostor_type(PointsDrawable::SPHERE);
+        drawable->set_point_size(10.0f);
+
+        drawable->update_vertex_buffer(new_points.vector());
+        drawable->update_normal_buffer(new_normals.vector());
+        drawable->update_color_buffer(coloring.vector());
+        
+        viewer->add_drawable(drawable);
+        drawables.push_back(drawable);
 
         // draw bbox and cylinders
         for (auto& cylinder : cylinders) {
-            const std::vector<std::size_t>& vertices = cylinder->indices_of_assigned_points();
+            const std::vector<std::size_t>& indices = cylinder->indices_of_assigned_points();
             std::vector<vec3> cylinder_points;
-            for (auto& vertex : vertices) {
-                auto& point = pwn_vector.at(vertex).first;
-                cylinder_points.push_back(vec3(point.x(), point.y(), point.z()));
+            for (auto& index : indices) {
+                cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
             }
 
             auto bbox_drawable = new LinesDrawable("bbox");
