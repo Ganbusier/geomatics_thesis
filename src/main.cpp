@@ -58,8 +58,8 @@ int main(int argc, char** argv) {
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
     drawable->set_uniform_coloring(vec4(0.6f, 0.6f, 1.0f, 1.0f));
-    drawable->set_impostor_type(PointsDrawable::SPHERE);
-    drawable->set_point_size(10.0f);
+    drawable->set_impostor_type(PointsDrawable::PLAIN);
+    drawable->set_point_size(3.0f);
 
     // usage
     viewer.set_usage(
@@ -118,48 +118,6 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
     int num_cylinders = ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
                                       normal_threshold, overlook_probability);
 
-    // float best_bitmap_resolution = 0.0f;
-    // unsigned int best_min_support = 0.0f;
-    // float best_dist_threshold = 0.0f;
-    // int num_cylinders = 0;
-
-    // std::vector<float> bitmap_resolutions = {0.01f, 0.02f, 0.05f};
-    // std::vector<float> min_support_ratios = {0.05, 0.1, 0.15, 0.2};
-    // std::vector<float> dist_threshold_values = {0.002f, 0.005f, 0.01f};
-
-    // for (float& min_support_ratio : min_support_ratios) {
-    //     for (float& dist_threshold : dist_threshold_values) {
-    //         for (float& bitmap_resolution : bitmap_resolutions) {
-    //             unsigned int min_support = static_cast<unsigned int>(
-    //                 std::round(min_support_ratio * cloud->n_vertices()));
-
-    //             if (min_support < 3) min_support = 3;
-
-    //             LOG(INFO) << "Testing min support: " << min_support
-    //                       << ", dist threshold: " << dist_threshold;
-
-    //             int detected_cylinders =
-    //                 ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
-    //                               normal_threshold, overlook_probability);
-
-    //             if (detected_cylinders > num_cylinders) {
-    //                 num_cylinders = detected_cylinders;
-    //                 best_min_support = min_support;
-    //                 best_dist_threshold = dist_threshold;
-    //                 best_bitmap_resolution = bitmap_resolution;
-    //             }
-    //         }
-    //     }
-    // }
-
-    // LOG(INFO) << "Best min support: " << best_min_support
-    //           << ", best dist threshold: " << best_dist_threshold
-    //           << ", best bitmap resolution: " << best_bitmap_resolution;
-
-    // num_cylinders = ransac.detect(cloud, best_min_support, best_dist_threshold,
-    //                               best_bitmap_resolution, normal_threshold,
-    //                               overlook_probability);
-
     if (num_cylinders > 0) {
         LOG(INFO) << "Detected " << num_cylinders << " cylinders";
         auto cylinders = ransac.get_cylinders();
@@ -214,12 +172,12 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
 
             auto cylinder_drawable = new LinesDrawable("cylinder");
             std::vector<vec3> cylinder_endpoints = {
-                cylinder.position, cylinder.position + cylinder.direction * 100.0f};
+                cylinder.position, cylinder.position + cylinder.direction * 10.0f};
             std::vector<unsigned int> cylinder_indices = {0, 1};
             cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
             cylinder_drawable->update_element_buffer(cylinder_indices);
             cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
-            cylinder_drawable->set_line_width(cylinder.radius);
+            cylinder_drawable->set_line_width(cylinder.radius * 2.0f);
             cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
             viewer->add_drawable(cylinder_drawable);
             drawables.push_back(cylinder_drawable);
@@ -260,11 +218,11 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     ransac.add_shape_factory<Cylinder>();
 
     Efficient_ransac::Parameters params;
-    params.normal_threshold = 0.8;
+    params.normal_threshold = 0.9;
     params.probability = 0.01;
     params.min_points = 20;
-    params.epsilon = 0.7;
-    params.cluster_epsilon = 1.4;
+    params.epsilon = 0.726;
+    params.cluster_epsilon = 1.426;
 
     ransac.detect(params);
 
@@ -323,8 +281,8 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
         auto drawable = new PointsDrawable("vertices");
         drawable->set_property_coloring(State::VERTEX, color_name);
-        drawable->set_impostor_type(PointsDrawable::SPHERE);
-        drawable->set_point_size(10.0f);
+        drawable->set_impostor_type(PointsDrawable::PLAIN);
+        drawable->set_point_size(3.0f);
 
         drawable->update_vertex_buffer(new_points.vector());
         drawable->update_normal_buffer(new_normals.vector());
@@ -334,7 +292,9 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
         drawables.push_back(drawable);
 
         // draw bbox and cylinders
-        for (auto& cylinder : cylinders) {
+        for (int i = 0; i < cylinders.size(); i++) {
+            auto cylinder = cylinders[i];
+            LOG(INFO) << "Cylinder " << i << ": " << cylinder->info();
             const std::vector<std::size_t>& indices = cylinder->indices_of_assigned_points();
             std::vector<vec3> cylinder_points;
             for (auto& index : indices) {
@@ -366,7 +326,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             auto axis = cylinder->axis();
             auto random_point = axis.point();
             auto direction = axis.to_vector();
-            auto end_point = random_point + direction;
+            auto end_point = random_point + direction * 20.0f;
             auto radius = cylinder->radius();
             std::vector<vec3> cylinder_endpoints = {
                 vec3(random_point.x(), random_point.y(), random_point.z()),
@@ -375,7 +335,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
             cylinder_drawable->update_element_buffer(cylinder_indices);
             cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
-            cylinder_drawable->set_line_width(radius);
+            cylinder_drawable->set_line_width(2.0 * radius);
             cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
             viewer->add_drawable(cylinder_drawable);
             drawables.push_back(cylinder_drawable);
