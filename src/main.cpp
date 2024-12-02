@@ -104,6 +104,7 @@ bool estimate_normals(Viewer* viewer, Model* model) {
         auto drawable = cloud->renderer()->get_points_drawable("vertices");
         // Upload the vertex normals to the GPU.
         drawable->update_normal_buffer(normals.vector());
+        drawable->set_visible(true);
         viewer->update();
 
         // clear previous viewer drawables
@@ -264,8 +265,8 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     params.normal_threshold = 0.9;
     params.probability = 0.01;
     params.min_points = 20;
-    params.epsilon = 0.7;
-    params.cluster_epsilon = 1.426;
+    params.epsilon = 1.0;
+    params.cluster_epsilon = 2.0;
 
     ransac.detect(params);
 
@@ -346,6 +347,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
             auto bbox_drawable = new LinesDrawable("bbox");
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+            LOG(INFO) << "Box " << i << " center: " << box.center();
             float xmin = box.min_coord(0);
             float xmax = box.max_coord(0);
             float ymin = box.min_coord(1);
@@ -367,10 +369,10 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
             auto cylinder_drawable = new LinesDrawable("cylinder");
             auto axis = cylinder->axis();
-            auto center_point = axis.point(0);
             auto direction = axis.to_vector();
-            auto start_point = center_point + direction * box.radius();
-            auto end_point = center_point - direction * box.radius();
+            auto center = axis.point(0);
+            auto start_point = center - direction * box.radius();
+            auto end_point = center + direction * box.radius();
             auto radius = cylinder->radius();
             std::vector<vec3> cylinder_endpoints = {
                 vec3(start_point.x(), start_point.y(), start_point.z()),
@@ -416,9 +418,10 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
 
     // set up region growing parameters
     const std::size_t k = 20;
-    const FT max_distance = FT(0.7);
-    const FT max_angle = FT(60);
-    const std::size_t min_region_size = 20;
+    const FT max_distance = FT(1.0);
+    const FT max_angle = FT(25);
+    const FT max_radius = FT(5.0);
+    const std::size_t min_region_size = 10;
 
     // create instances of the classes Neighbor_query and Region_type
     Neighbor_query neighbor_query = CGAL::Shape_detection::Point_set::make_k_neighbor_query(
@@ -428,11 +431,11 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
         CGAL::Shape_detection::Point_set::make_least_squares_cylinder_fit_region(
             point_set, CGAL::parameters::maximum_distance(max_distance)
                            .maximum_angle(max_angle)
+                           .maximum_radius(max_radius)
                            .minimum_region_size(min_region_size));
-    
+
     // create an instance of the class Region_growing
     Region_growing region_growing(point_set, neighbor_query, region_type);
-
 
     // run the region growing algorithm
     CGAL::Random random;
@@ -505,8 +508,9 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
         for (size_t i = 0; i < regions.size(); ++i) {
             const auto& primitive_and_region = regions[i];
             const auto& cylinder = primitive_and_region.first;
-            LOG(INFO) << "Cylinder " << i << " center: " << cylinder.axis.point(0);
-            LOG(INFO) << "Cylinder " << i << " radius: " << cylinder.radius;
+            LOG(INFO) << "Cylinder " << i << " center: " << cylinder.axis.point(0)
+                      << " radius: " << cylinder.radius
+                      << " direction: " << cylinder.axis.to_vector();
 
             const auto& indices = primitive_and_region.second;
             std::vector<vec3> cylinder_points;
