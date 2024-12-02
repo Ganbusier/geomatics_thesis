@@ -99,11 +99,34 @@ bool estimate_normals(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
     auto cloud = dynamic_cast<PointCloud*>(model);
     if (PointCloudNormals::estimate(cloud, k_neighbors)) {
+        auto points = cloud->get_vertex_property<vec3>("v:point");
         auto normals = cloud->get_vertex_property<vec3>("v:normal");
         auto drawable = cloud->renderer()->get_points_drawable("vertices");
         // Upload the vertex normals to the GPU.
         drawable->update_normal_buffer(normals.vector());
         viewer->update();
+
+        // clear previous viewer drawables
+        for (auto& drawable : drawables) {
+            viewer->delete_drawable(drawable);
+        }
+        drawables.clear();
+
+        for (auto vertex : cloud->vertices()) {
+            auto normal = normals[vertex];
+            auto point = points[vertex];
+            auto line_drawable = new LinesDrawable("normal");
+            std::vector<vec3> line_points = {point, point + normal * 10.0f};
+            std::vector<unsigned int> cylinder_indices = {0, 1};
+            line_drawable->update_vertex_buffer(line_points);
+            line_drawable->update_element_buffer(cylinder_indices);
+            line_drawable->set_impostor_type(LinesDrawable::PLAIN);
+            line_drawable->set_line_width(1.0f);
+            line_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            viewer->add_drawable(line_drawable);
+            drawables.push_back(line_drawable);
+        }
+
         return true;
     } else
         return false;
@@ -241,7 +264,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     params.normal_threshold = 0.9;
     params.probability = 0.01;
     params.min_points = 20;
-    params.epsilon = 0.01;
+    params.epsilon = 0.7;
     params.cluster_epsilon = 1.426;
 
     ransac.detect(params);
