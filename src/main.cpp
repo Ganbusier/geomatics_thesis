@@ -516,8 +516,8 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
             auto axis = cylinder.axis;
             auto center_point = axis.point(0);
             auto direction = axis.to_vector();
-            auto start_point = center_point + direction * 10.0f;
-            auto end_point = center_point - direction * 10.0f;
+            auto start_point = center_point + direction * box.radius();
+            auto end_point = center_point - direction * box.radius();
             auto radius = cylinder.radius;
             std::vector<vec3> cylinder_endpoints = {
                 vec3(start_point.x(), start_point.y(), start_point.z()),
