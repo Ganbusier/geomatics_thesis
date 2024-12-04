@@ -55,7 +55,7 @@ using namespace easy3d;
 bool run_easy3d_ransac(Viewer* viewer, Model* model);
 bool run_cgal_ransac(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
-bool offset_xy(Viewer* viewer, Model* model);
+bool offset_xyz(Viewer* viewer, Model* model);
 bool run_cgal_region_growing(Viewer* viewer, Model* model);
 
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
 
     Viewer viewer("Geomatics Thesis");
     Model* model = viewer.add_model(input_file_path, true);
-    offset_xy(&viewer, model);
+    offset_xyz(&viewer, model);
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
     drawable->set_uniform_coloring(vec4(0.6f, 0.6f, 1.0f, 1.0f));
@@ -150,28 +150,32 @@ bool estimate_normals(Viewer* viewer, Model* model) {
     return true;
 }
 
-bool offset_xy(Viewer* viewer, Model* model) {
+bool offset_xyz(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
 
     auto cloud = dynamic_cast<PointCloud*>(model);
     auto points = cloud->get_vertex_property<vec3>("v:point");
     float min_x = INFINITY;
     float min_y = INFINITY;
+    float min_z = INFINITY;
     for (auto vertex : cloud->vertices()) {
         const vec3& point = points[vertex];
         if (point.x < min_x) min_x = point.x;
         if (point.y < min_y) min_y = point.y;
+        if (point.z < min_z) min_z = point.z;
     }
     min_x -= 1.0f;
     min_y -= 1.0f;
-    LOG(INFO) << "Offsetting xy by " << min_x << " and " << min_y;
+    min_z -= 1.0f;
+    LOG(INFO) << "Offsetting xyz by " << min_x << ", " << min_y << ", " << min_z;
     LOG(INFO) << "Original point 0: " << points[PointCloud::Vertex(0)];
     for (auto vertex : cloud->vertices()) {
         points[vertex].x -= min_x;
         points[vertex].y -= min_y;
+        points[vertex].z -= min_z;
     }
     LOG(INFO) << "Offset point 0:" << points[PointCloud::Vertex(0)];
-    cloud->add_vertex_property<vec3>("v:offset_vector", vec3(min_x, min_y, 0.0f));
+    cloud->add_vertex_property<vec3>("v:offset_vector", vec3(min_x, min_y, min_z));
     return true;
 }
 
@@ -306,9 +310,9 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     Efficient_ransac::Parameters params;
     params.normal_threshold = 0.9;
     params.probability = 0.01;
-    params.min_points = 20;
-    params.epsilon = 1.0;
-    params.cluster_epsilon = 2.0;
+    params.min_points = 2;
+    params.epsilon = 0.05;
+    params.cluster_epsilon = 0.5;
 
     ransac.detect(params);
 
@@ -462,8 +466,9 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
     const std::size_t k = 20;
     const FT max_distance = FT(1.0);
     const FT max_angle = FT(25);
+    const FT min_radius = FT(0.1);
     const FT max_radius = FT(5.0);
-    const std::size_t min_region_size = 10;
+    const std::size_t min_region_size = 5;
 
     // create instances of the classes Neighbor_query and Region_type
     Neighbor_query neighbor_query = CGAL::Shape_detection::Point_set::make_k_neighbor_query(
@@ -473,6 +478,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
         CGAL::Shape_detection::Point_set::make_least_squares_cylinder_fit_region(
             point_set, CGAL::parameters::maximum_distance(max_distance)
                            .maximum_angle(max_angle)
+                           .minimum_radius(min_radius)
                            .maximum_radius(max_radius)
                            .minimum_region_size(min_region_size));
 
