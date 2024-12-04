@@ -198,11 +198,11 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
 
     ransac.add_primitive_type(PrimitivesRansac::CYLINDER);
 
-    float normal_threshold = 0.8f;
+    float normal_threshold = 0.9f;
     float overlook_probability = 0.001f;
-    float bitmap_resolution = 0.05f;
+    float bitmap_resolution = 0.01f;
     float dist_threshold = 0.01f;
-    unsigned int min_support = 20;
+    unsigned int min_support = 2;
 
     int num_cylinders = ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
                                       normal_threshold, overlook_probability);
@@ -239,7 +239,7 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
                 cylinder_points.push_back(points[PointCloud::Vertex(vertex)]);
             }
 
-            auto bbox_drawable = new LinesDrawable("bbox");
+            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
             float xmin = box.min_coord(0);
             float xmax = box.max_coord(0);
@@ -260,9 +260,9 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
             viewer->add_drawable(bbox_drawable);
             drawables.push_back(bbox_drawable);
 
-            auto cylinder_drawable = new LinesDrawable("cylinder");
-            std::vector<vec3> cylinder_endpoints = {cylinder.position,
-                                                    cylinder.position + cylinder.direction * 10.0f};
+            auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
+            std::vector<vec3> cylinder_endpoints = {cylinder.position - cylinder.direction * box.radius(),
+                                                    cylinder.position + cylinder.direction * box.radius()};
             std::vector<unsigned int> cylinder_indices = {0, 1};
             cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
             cylinder_drawable->update_element_buffer(cylinder_indices);
@@ -309,7 +309,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
     Efficient_ransac::Parameters params;
     params.normal_threshold = 0.9;
-    params.probability = 0.01;
+    params.probability = 0.001;
     params.min_points = 2;
     params.epsilon = 0.05;
     params.cluster_epsilon = 0.5;
@@ -391,7 +391,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
                 cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
             }
 
-            auto bbox_drawable = new LinesDrawable("bbox");
+            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
             LOG(INFO) << "Box " << i << " center: " << box.center();
             float xmin = box.min_coord(0);
@@ -413,10 +413,11 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             viewer->add_drawable(bbox_drawable);
             drawables.push_back(bbox_drawable);
 
-            auto cylinder_drawable = new LinesDrawable("cylinder");
+            auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
             auto axis = cylinder->axis();
             auto direction = axis.to_vector();
-            auto center = axis.point(0);
+            // auto center = axis.point(0);
+            auto center = CGAL::Point_3<CGAL::Epick>(box.center().x, box.center().y, box.center().z);
             auto start_point = center - direction * box.radius();
             auto end_point = center + direction * box.radius();
             auto radius = cylinder->radius();
@@ -566,7 +567,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
                 cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
             }
 
-            auto bbox_drawable = new LinesDrawable("bbox");
+            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
             float xmin = box.min_coord(0);
             float xmax = box.max_coord(0);
@@ -587,7 +588,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
             viewer->add_drawable(bbox_drawable);
             drawables.push_back(bbox_drawable);
 
-            auto cylinder_drawable = new LinesDrawable("cylinder");
+            auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
             auto axis = cylinder.axis;
             auto center_point = axis.point(0);
             auto direction = axis.to_vector();
