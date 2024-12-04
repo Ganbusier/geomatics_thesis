@@ -55,6 +55,7 @@ using namespace easy3d;
 bool run_easy3d_ransac(Viewer* viewer, Model* model);
 bool run_cgal_ransac(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
+bool offset_xy(Viewer* viewer, Model* model);
 bool run_cgal_region_growing(Viewer* viewer, Model* model);
 
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
@@ -73,6 +74,7 @@ int main(int argc, char** argv) {
 
     Viewer viewer("Geomatics Thesis");
     Model* model = viewer.add_model(input_file_path, true);
+    offset_xy(&viewer, model);
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
     drawable->set_uniform_coloring(vec4(0.6f, 0.6f, 1.0f, 1.0f));
@@ -95,42 +97,82 @@ int main(int argc, char** argv) {
     return viewer.run();
 }
 
+bool show_normals(Viewer* viewer, PointCloud* cloud) {
+    if (!viewer || !cloud) return false;
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    auto drawable = cloud->renderer()->get_points_drawable("vertices");
+
+    // Upload the vertex normals to the GPU.
+    drawable->update_normal_buffer(normals.vector());
+    drawable->set_visible(true);
+    viewer->update();
+
+    // clear previous viewer drawables
+    for (auto& drawable : drawables) {
+        viewer->delete_drawable(drawable);
+    }
+    drawables.clear();
+
+    for (auto vertex : cloud->vertices()) {
+        auto normal = normals[vertex];
+        auto point = points[vertex];
+        auto line_drawable = new LinesDrawable("normal");
+        std::vector<vec3> line_points = {point, point + normal * 10.0f};
+        std::vector<unsigned int> cylinder_indices = {0, 1};
+        line_drawable->update_vertex_buffer(line_points);
+        line_drawable->update_element_buffer(cylinder_indices);
+        line_drawable->set_impostor_type(LinesDrawable::PLAIN);
+        line_drawable->set_line_width(1.0f);
+        line_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+        viewer->add_drawable(line_drawable);
+        drawables.push_back(line_drawable);
+    }
+    return true;
+}
+
 bool estimate_normals(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
     auto cloud = dynamic_cast<PointCloud*>(model);
-    if (PointCloudNormals::estimate(cloud, k_neighbors)) {
-        auto points = cloud->get_vertex_property<vec3>("v:point");
-        auto normals = cloud->get_vertex_property<vec3>("v:normal");
-        auto drawable = cloud->renderer()->get_points_drawable("vertices");
-        // Upload the vertex normals to the GPU.
-        drawable->update_normal_buffer(normals.vector());
-        drawable->set_visible(true);
-        viewer->update();
-
-        // clear previous viewer drawables
-        for (auto& drawable : drawables) {
-            viewer->delete_drawable(drawable);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    if (!normals) {
+        if (PointCloudNormals::estimate(cloud, k_neighbors)) {
+            show_normals(viewer, cloud);
+            return true;
+        } else {
+            return false;
         }
-        drawables.clear();
-
-        for (auto vertex : cloud->vertices()) {
-            auto normal = normals[vertex];
-            auto point = points[vertex];
-            auto line_drawable = new LinesDrawable("normal");
-            std::vector<vec3> line_points = {point, point + normal * 10.0f};
-            std::vector<unsigned int> cylinder_indices = {0, 1};
-            line_drawable->update_vertex_buffer(line_points);
-            line_drawable->update_element_buffer(cylinder_indices);
-            line_drawable->set_impostor_type(LinesDrawable::PLAIN);
-            line_drawable->set_line_width(1.0f);
-            line_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
-            viewer->add_drawable(line_drawable);
-            drawables.push_back(line_drawable);
-        }
-
+    } else {
+        show_normals(viewer, cloud);
         return true;
-    } else
-        return false;
+    }
+
+    return true;
+}
+
+bool offset_xy(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    float min_x = INFINITY;
+    float min_y = INFINITY;
+    for (auto vertex : cloud->vertices()) {
+        const vec3& point = points[vertex];
+        if (point.x < min_x) min_x = point.x;
+        if (point.y < min_y) min_y = point.y;
+    }
+    min_x -= 1.0f;
+    min_y -= 1.0f;
+    LOG(INFO) << "Offsetting xy by " << min_x << " and " << min_y;
+    LOG(INFO) << "Original point 0: " << points[PointCloud::Vertex(0)];
+    for (auto vertex : cloud->vertices()) {
+        points[vertex].x -= min_x;
+        points[vertex].y -= min_y;
+    }
+    LOG(INFO) << "Offset point 0:" << points[PointCloud::Vertex(0)];
+    cloud->add_vertex_property<vec3>("v:offset_vector", vec3(min_x, min_y, 0.0f));
+    return true;
 }
 
 bool run_easy3d_ransac(Viewer* viewer, Model* model) {
