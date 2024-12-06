@@ -36,12 +36,15 @@ typedef CGAL::Shape_detection::Cylinder<Traits> Cylinder;
 typedef CGAL::Shape_detection::Plane<Traits> Plane;
 typedef CGAL::Shape_detection::Sphere<Traits> Sphere;
 
+typedef CGAL::Point_3<CGAL::Epick> Point_3;
+typedef CGAL::Vector_3<CGAL::Epick> Vector_3;
+
 // Typedefs for CGAL Region growing
 using Kernel_rg = CGAL::Simple_cartesian<double>;
-using Point_3 = Kernel_rg::Point_3;
-using Vector_3 = Kernel_rg::Vector_3;
+using Point_3_rg = Kernel_rg::Point_3;
+using Vector_3_rg = Kernel_rg::Vector_3;
 
-using Point_set = CGAL::Point_set_3<Point_3>;
+using Point_set = CGAL::Point_set_3<Point_3_rg>;
 using Point_map_rg = typename Point_set::Point_map;
 using Normal_map_rg = typename Point_set::Vector_map;
 
@@ -57,6 +60,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
 bool offset_xyz(Viewer* viewer, Model* model);
 bool run_cgal_region_growing(Viewer* viewer, Model* model);
+Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vector_3& d);
 
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
 int k_neighbors = 50;              // k-nearest neighbors for normal estimation
@@ -136,6 +140,7 @@ bool estimate_normals(Viewer* viewer, Model* model) {
     auto cloud = dynamic_cast<PointCloud*>(model);
     auto normals = cloud->get_vertex_property<vec3>("v:normal");
     if (!normals) {
+        LOG(INFO) << "Point cloud does not have normals. Estimating...";
         if (PointCloudNormals::estimate(cloud, k_neighbors)) {
             show_normals(viewer, cloud);
             return true;
@@ -143,6 +148,7 @@ bool estimate_normals(Viewer* viewer, Model* model) {
             return false;
         }
     } else {
+        LOG(INFO) << "Point cloud already has normals.";
         show_normals(viewer, cloud);
         return true;
     }
@@ -158,22 +164,23 @@ bool offset_xyz(Viewer* viewer, Model* model) {
     float min_x = INFINITY;
     float min_y = INFINITY;
     float min_z = INFINITY;
+
     for (auto vertex : cloud->vertices()) {
         const vec3& point = points[vertex];
         if (point.x < min_x) min_x = point.x;
         if (point.y < min_y) min_y = point.y;
         if (point.z < min_z) min_z = point.z;
     }
-    min_x -= 1.0f;
-    min_y -= 1.0f;
-    min_z -= 1.0f;
+
     LOG(INFO) << "Offsetting xyz by " << min_x << ", " << min_y << ", " << min_z;
     LOG(INFO) << "Original point 0: " << points[PointCloud::Vertex(0)];
+
     for (auto vertex : cloud->vertices()) {
         points[vertex].x -= min_x;
         points[vertex].y -= min_y;
         points[vertex].z -= min_z;
     }
+
     LOG(INFO) << "Offset point 0:" << points[PointCloud::Vertex(0)];
     cloud->add_vertex_property<vec3>("v:offset_vector", vec3(min_x, min_y, min_z));
     return true;
@@ -185,6 +192,7 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
     auto cloud = dynamic_cast<PointCloud*>(model);
     auto normals = cloud->get_vertex_property<vec3>("v:normal");
     auto points = cloud->get_vertex_property<vec3>("v:point");
+
     if (!normals) {
         bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
         if (!estimate_normals) {
@@ -416,8 +424,9 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
             auto axis = cylinder->axis();
             auto direction = axis.to_vector();
-            // auto center = axis.point(0);
-            auto center = CGAL::Point_3<CGAL::Epick>(box.center().x, box.center().y, box.center().z);
+            auto cylinder_center = axis.point(0);
+            auto box_center = Point_3(box.center().x, box.center().y, box.center().z);
+            auto center = move_point_perpendicular(cylinder_center, box_center, direction);
             auto start_point = center - direction * box.radius();
             auto end_point = center + direction * box.radius();
             auto radius = cylinder->radius();
@@ -457,19 +466,19 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
     for (const auto& vertex : cloud->vertices()) {
         const easy3d::vec3 p = points[vertex];
         const easy3d::vec3 n = normals[vertex];
-        point_set.insert(Point_3(p[0], p[1], p[2]), Vector_3(n[0], n[1], n[2]));
+        point_set.insert(Point_3_rg(p[0], p[1], p[2]), Vector_3_rg(n[0], n[1], n[2]));
     }
     LOG(INFO) << "Point set size: " << point_set.size();
 
     LOG(INFO) << "Running CGAL region growing";
 
     // set up region growing parameters
-    const std::size_t k = 20;
-    const FT max_distance = FT(1.0);
+    const std::size_t k = 5;
+    const FT max_distance = FT(0.1);
     const FT max_angle = FT(25);
-    const FT min_radius = FT(0.1);
+    const FT min_radius = FT(0.01);
     const FT max_radius = FT(5.0);
-    const std::size_t min_region_size = 5;
+    const std::size_t min_region_size = 2;
 
     // create instances of the classes Neighbor_query and Region_type
     Neighbor_query neighbor_query = CGAL::Shape_detection::Point_set::make_k_neighbor_query(
@@ -569,6 +578,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
 
             auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+            LOG(INFO) << "Box " << i << " center: " << box.center();
             float xmin = box.min_coord(0);
             float xmax = box.max_coord(0);
             float ymin = box.min_coord(1);
@@ -610,4 +620,11 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
     }
 
     return true;
+}
+
+Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vector_3& d) {
+    Vector_3 diff = p2 - p1;
+    Vector_3 projection = (diff * d) / d.squared_length() * d;
+    Point_3 moved_p1 = p1 + projection;
+    return moved_p1;
 }
