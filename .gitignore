@@ -2,3 +2,4 @@ build
 .DS_Store
 resources/dalles_partial.ply
 .vscode
+.venv
