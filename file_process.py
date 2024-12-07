@@ -2,7 +2,7 @@ import laspy
 from plyfile import PlyData, PlyElement
 import numpy as np
 from tqdm import tqdm
-
+import argparse
 
 def laz_process(input_file: str, output_file: str):
     filtered_points = []
@@ -72,12 +72,24 @@ def xyz_to_ply(input_file: str, output_file: str):
 
     print(f"PLY point cloud saved to {output_file}")
 
+def main():
+    parser = argparse.ArgumentParser(description="Process and convert point cloud files.")
+    
+    parser.add_argument("input_file", type=str, help="Path to the input file.")
+    parser.add_argument("output_file", type=str, help="Path to the output file.")
+    parser.add_argument("function", type=str, help="Function to execute: laz_process, ply_to_xyz, or xyz_to_ply.")
+    parser.add_argument("--offset", action="store_true", help="Enable offset for ply_to_xyz.")
+    
+    args = parser.parse_args()
+    function = args.function.lower()
+    
+    if function == "laz_process":
+        laz_process(input_file=args.input_file, output_file=args.output_file)
+    elif function == "ply_to_xyz":
+        ply_to_xyz(input_file=args.input_file, output_file=args.output_file, offset=args.offset)
+    elif function == "xyz_to_ply":
+        xyz_to_ply(input_file=args.input_file, output_file=args.output_file)
+
 
 if __name__ == "__main__":
-
-    input_file = "./resources/2024_C_44HZ1_14_line_End.xyz"
-    output_file = "./resources/2024_C_44HZ1_14_line_End.ply"
-
-    # laz_process(input_file=input_file, output_file=output_file)
-    # ply_to_xyz(input_file=input_file, output_file=output_file, offset=True)
-    xyz_to_ply(input_file=input_file, output_file=output_file)
+    main()
