@@ -1,5 +1,7 @@
+import os
 import laspy
 from plyfile import PlyData, PlyElement
+from collections import defaultdict
 import numpy as np
 from tqdm import tqdm
 import argparse
@@ -72,6 +74,31 @@ def xyz_to_ply(input_file: str, output_file: str):
 
     print(f"PLY point cloud saved to {output_file}")
 
+def dalles_dataset_process(input_file: str, output_folder: str):
+    os.makedirs(output_folder, exist_ok=True)
+
+    ply_data = PlyData.read(input_file)
+    vertices = ply_data["testing"]
+    sem_class = vertices["sem_class"]
+    ins_class = vertices["ins_class"]
+    x = vertices["x"]
+    y = vertices["y"]
+    z = vertices["z"]
+
+    ins_dict = defaultdict(list)
+
+    for i in range(len(x)):
+        if sem_class[i] == 7:
+            ins_dict[ins_class[i]].append((x[i], y[i], z[i]))
+
+    for ins_id, points in ins_dict.items():
+        ins_points = np.array(points, dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")])
+        ply_element = PlyElement.describe(ins_points, "vertex")
+        PlyData([ply_element], text=True).write(f"{output_folder}/ins_{ins_id}.ply")
+    
+    print(f"Processed DALLES dataset saved to {output_folder}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Process and convert point cloud files.")
     
@@ -92,4 +119,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    input_file = "./resources/dalles_partial.ply"
+    output_folder = "./resources/dalles/"
+    dalles_dataset_process(input_file, output_folder)
