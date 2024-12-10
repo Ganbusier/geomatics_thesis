@@ -3,3 +3,4 @@ build
 resources/dalles_partial.ply
 .vscode
 .venv
+3rd_party/rerun_cpp_sdk/src/rerun

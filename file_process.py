@@ -119,7 +119,7 @@ def main():
 
 
 if __name__ == "__main__":
-    # main()
-    input_file = "./resources/dalles_partial.ply"
-    output_folder = "./resources/dalles/"
-    dalles_dataset_process(input_file, output_folder)
+    main()
+    # input_file = "./resources/dalles_partial.ply"
+    # output_folder = "./resources/dalles/"
+    # dalles_dataset_process(input_file, output_folder)
