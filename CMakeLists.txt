@@ -19,6 +19,11 @@ endif()
 
 # CGAL
 set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
+find_package(CGAL REQUIRED PATHS ${CGAL_DIR} NO_DEFAULT_PATH) 
+if ( NOT CGAL_FOUND )
+  message(STATUS "This project requires the CGAL library, and will not be compiled.")
+  return()
+endif()
 
 # Easy3D
 set(Easy3D_PATH ${CMAKE_SOURCE_DIR}/3rd_party/Easy3D)
@@ -26,16 +31,19 @@ set(Easy3D_BUILD_TUTORIALS OFF CACHE BOOL "Build Easy3D tutorials" FORCE)
 add_subdirectory(${Easy3D_PATH})
 set(Easy3D_DIR ${CMAKE_SOURCE_DIR}/build)
 
-# PCL
-find_package(PCL REQUIRED)
+# # Arrow
+# find_package( Arrow REQUIRED )
+# if ( NOT Arrow_FOUND )
+#   message(STATUS "This project requires the Arrow library, and will not be compiled.")
+#   return()
+# endif()
 
-if ( NOT PCL_FOUND )
-  message(STATUS "This project requires the PCL library, and will not be compiled.")
-  return()
-endif()
-
-include_directories(${PCL_INCLUDE_DIRS})
-add_definitions(${PCL_DEFINITIONS})
+# # rerun
+# set(RERUN_DOWNLOAD_AND_BUILD_ARROW OFF CACHE BOOL "Disable downloading and building Arrow" FORCE)
+# include(FetchContent)
+# FetchContent_Declare(rerun_sdk
+#   SOURCE_DIR ${CMAKE_SOURCE_DIR}/3rd_party/rerun_cpp_sdk)
+# FetchContent_MakeAvailable(rerun_sdk)
 
 # include for local directory
 # include_directories( ${CMAKE_SOURCE_DIR}/include )
@@ -43,8 +51,8 @@ add_definitions(${PCL_DEFINITIONS})
 # Creating entries for all C++ files from src directory
 FILE(GLOB SRC_FILES src/main.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
-target_link_libraries(${PROJECT_NAME} 
-                      ${PCL_LIBRARIES} 
+target_link_libraries(${PROJECT_NAME}
+                      PUBLIC
                       ${CGAL_LIBRARIES} 
                       easy3d::viewer 
                       easy3d::algo 
