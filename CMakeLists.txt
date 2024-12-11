@@ -5,10 +5,6 @@ project( geomatics_thesis )
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE Release)
 
-if (WIN32)
-  add_compile_options(-msse3 -march=native)
-endif()
-
 # Boost
 find_package( Boost REQUIRED )
 
@@ -31,19 +27,9 @@ set(Easy3D_BUILD_TUTORIALS OFF CACHE BOOL "Build Easy3D tutorials" FORCE)
 add_subdirectory(${Easy3D_PATH})
 set(Easy3D_DIR ${CMAKE_SOURCE_DIR}/build)
 
-# # Arrow
-# find_package( Arrow REQUIRED )
-# if ( NOT Arrow_FOUND )
-#   message(STATUS "This project requires the Arrow library, and will not be compiled.")
-#   return()
-# endif()
-
-# # rerun
-# set(RERUN_DOWNLOAD_AND_BUILD_ARROW OFF CACHE BOOL "Disable downloading and building Arrow" FORCE)
-# include(FetchContent)
-# FetchContent_Declare(rerun_sdk
-#   SOURCE_DIR ${CMAKE_SOURCE_DIR}/3rd_party/rerun_cpp_sdk)
-# FetchContent_MakeAvailable(rerun_sdk)
+# rerun
+set(RERUN_DIR ${CMAKE_SOURCE_DIR}/3rd_party/rerun_cpp_sdk)
+add_subdirectory(${RERUN_DIR})
 
 # include for local directory
 # include_directories( ${CMAKE_SOURCE_DIR}/include )
@@ -58,7 +44,10 @@ target_link_libraries(${PROJECT_NAME}
                       easy3d::algo 
                       easy3d::core 
                       easy3d::fileio 
-                      easy3d::util)
+                      easy3d::util
+                      
+                      PRIVATE
+                      rerun_sdk)
 # ##########################################################
 
 

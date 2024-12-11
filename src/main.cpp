@@ -17,6 +17,8 @@
 #include <easy3d/util/initializer.h>
 #include <easy3d/util/resource.h>
 #include <easy3d/viewer/viewer.h>
+#include <rerun.hpp>
+#include <rerun/demo_utils.hpp>
 
 #include <filesystem>
 #include <iostream>
@@ -54,6 +56,7 @@ using Region_type =
 using Region_growing = CGAL::Shape_detection::Region_growing<Neighbor_query, Region_type>;
 
 using namespace easy3d;
+using namespace rerun::demo;
 
 bool run_easy3d_ransac(Viewer* viewer, Model* model);
 bool run_cgal_ransac(Viewer* viewer, Model* model);
@@ -63,7 +66,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model);
 Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vector_3& d);
 
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
-int k_neighbors = 50;              // k-nearest neighbors for normal estimation
+int k_neighbors = 16;              // k-nearest neighbors for normal estimation
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -107,6 +110,19 @@ bool show_normals(Viewer* viewer, PointCloud* cloud) {
     auto points = cloud->get_vertex_property<vec3>("v:point");
     auto drawable = cloud->renderer()->get_points_drawable("vertices");
 
+    std::vector<rerun::Position3D> visual_points(cloud->n_vertices());
+    std::vector<rerun::Color> points_colors(cloud->n_vertices(), rerun::Color(255, 0, 0));
+
+    for (auto vertex : cloud->vertices()) {
+        auto point = points[vertex];
+        visual_points[vertex.idx()] = rerun::Position3D{point.x, point.y, point.z};
+    }
+
+    const auto rec = rerun::RecordingStream("show_normals");
+    rec.spawn().exit_on_failure();
+
+    rec.log("points", rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.5f}));
+
     // Upload the vertex normals to the GPU.
     drawable->update_normal_buffer(normals.vector());
     drawable->set_visible(true);
@@ -122,7 +138,7 @@ bool show_normals(Viewer* viewer, PointCloud* cloud) {
         auto normal = normals[vertex];
         auto point = points[vertex];
         auto line_drawable = new LinesDrawable("normal");
-        std::vector<vec3> line_points = {point, point + normal * 10.0f};
+        std::vector<vec3> line_points = {point, point + normal * 3.0f};
         std::vector<unsigned int> cylinder_indices = {0, 1};
         line_drawable->update_vertex_buffer(line_points);
         line_drawable->update_element_buffer(cylinder_indices);
@@ -313,28 +329,123 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
     ransac.set_input(pwn_vector);  // the pwn_vector will be reordered after RANSAC
 
-    ransac.add_shape_factory<Cylinder>();
+    // ransac.add_shape_factory<Cylinder>();
+    ransac.add_shape_factory<Plane>();
 
     Efficient_ransac::Parameters params;
     params.normal_threshold = 0.9;
     params.probability = 0.001;
     params.min_points = 2;
     params.epsilon = 0.05;
-    params.cluster_epsilon = 0.5;
+    params.cluster_epsilon = 1.0;
 
     ransac.detect(params);
 
     auto shapes = ransac.shapes();
     std::vector<Cylinder*> cylinders;
+    std::vector<Plane*> planes;
     for (auto& shape : shapes) {
         if (Cylinder* cylinder = dynamic_cast<Cylinder*>(shape.get())) {
             cylinders.push_back(cylinder);
         }
+        else if (Plane* plane = dynamic_cast<Plane*>(shape.get())) {
+            planes.push_back(plane);
+        }
     }
     int num_cylinders = cylinders.size();
+    int num_planes = planes.size();
 
     LOG(INFO) << "Detected " << num_cylinders << " cylinders, "
               << ransac.number_of_unassigned_points() << " unassigned points.";
+
+    LOG(INFO) << "Detected " << num_planes << " planes, "
+              << ransac.number_of_unassigned_points() << " unassigned points.";
+
+    if (num_planes > 0) {
+        for (auto& drawable : drawables) {
+            viewer->delete_drawable(drawable);
+        }
+        drawables.clear();
+
+        // hide default point cloud
+        auto default_drawable = cloud->renderer()->get_points_drawable("vertices");
+        default_drawable->set_visible(false);
+        default_drawable->update();
+        viewer->update();
+
+        // build new point cloud
+        PointCloud* new_cloud = new PointCloud;
+        auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
+        auto new_normals = new_cloud->add_vertex_property<vec3>("v:normal");
+        // initialize segments property to -1 which means unknown primitive type
+        auto segments = new_cloud->add_vertex_property<int>("v:primitive_index", -1);
+        for (size_t i = 0; i < pwn_vector.size(); i++) {
+            auto pwn = pwn_vector[i];
+            auto& point = pwn.first;
+            auto& normal = pwn.second;
+            new_cloud->add_vertex(vec3(point.x(), point.y(), point.z()));
+            new_normals[PointCloud::Vertex(i)] = vec3(normal.x(), normal.y(), normal.z());
+        }
+
+        for (size_t i = 0; i < planes.size(); i++) {
+            auto plane = planes[i];
+            const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
+            for (auto& index : indices) {
+                PointCloud::Vertex v(index);
+                segments[v] = i;
+            }
+        }
+
+        // draw new point cloud
+        const std::string color_name = "v:color-segments";
+        auto coloring = new_cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        Renderer::color_from_segmentation(new_cloud, segments, coloring);
+
+        auto drawable = new PointsDrawable("vertices");
+        drawable->set_property_coloring(State::VERTEX, color_name);
+        drawable->set_impostor_type(PointsDrawable::PLAIN);
+        drawable->set_point_size(3.0f);
+
+        drawable->update_vertex_buffer(new_points.vector());
+        drawable->update_normal_buffer(new_normals.vector());
+        drawable->update_color_buffer(coloring.vector());
+
+        viewer->add_drawable(drawable);
+        drawables.push_back(drawable);
+
+        // draw bboxs
+        for (int i = 0; i < planes.size(); i++) {
+            auto plane = planes[i];
+            LOG(INFO) << "Plane " << i << ": " << plane->info();
+            const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
+            std::vector<vec3> plane_points;
+            for (auto& index : indices) {
+                plane_points.push_back(new_points[PointCloud::Vertex(index)]);
+            }
+
+            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(plane_points);
+            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+            LOG(INFO) << "Box " << i << " center: " << box.center();
+            float xmin = box.min_coord(0);
+            float xmax = box.max_coord(0);
+            float ymin = box.min_coord(1);
+            float ymax = box.max_coord(1);
+            float zmin = box.min_coord(2);
+            float zmax = box.max_coord(2);
+            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            bbox_drawable->update_vertex_buffer(bbox_points);
+            bbox_drawable->update_element_buffer(bbox_indices);
+            bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+            bbox_drawable->set_line_width(5.0f);
+            viewer->add_drawable(bbox_drawable);
+            drawables.push_back(bbox_drawable);
+        }
+    }
 
     if (num_cylinders > 0) {
         // clear previous viewer drawables
@@ -399,27 +510,27 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
                 cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
             }
 
-            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
-            LOG(INFO) << "Box " << i << " center: " << box.center();
-            float xmin = box.min_coord(0);
-            float xmax = box.max_coord(0);
-            float ymin = box.min_coord(1);
-            float ymax = box.max_coord(1);
-            float zmin = box.min_coord(2);
-            float zmax = box.max_coord(2);
-            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
-                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
-                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
-                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
-            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
-                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
-            bbox_drawable->update_vertex_buffer(bbox_points);
-            bbox_drawable->update_element_buffer(bbox_indices);
-            bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
-            bbox_drawable->set_line_width(5.0f);
-            viewer->add_drawable(bbox_drawable);
-            drawables.push_back(bbox_drawable);
+            // auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+            // LOG(INFO) << "Box " << i << " center: " << box.center();
+            // float xmin = box.min_coord(0);
+            // float xmax = box.max_coord(0);
+            // float ymin = box.min_coord(1);
+            // float ymax = box.max_coord(1);
+            // float zmin = box.min_coord(2);
+            // float zmax = box.max_coord(2);
+            // const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+            //                                        vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+            //                                        vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+            //                                        vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            // const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+            //                                                 1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            // bbox_drawable->update_vertex_buffer(bbox_points);
+            // bbox_drawable->update_element_buffer(bbox_indices);
+            // bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+            // bbox_drawable->set_line_width(5.0f);
+            // viewer->add_drawable(bbox_drawable);
+            // drawables.push_back(bbox_drawable);
 
             auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
             auto axis = cylinder->axis();
@@ -576,27 +687,27 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
                 cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
             }
 
-            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
-            LOG(INFO) << "Box " << i << " center: " << box.center();
-            float xmin = box.min_coord(0);
-            float xmax = box.max_coord(0);
-            float ymin = box.min_coord(1);
-            float ymax = box.max_coord(1);
-            float zmin = box.min_coord(2);
-            float zmax = box.max_coord(2);
-            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
-                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
-                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
-                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
-            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
-                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
-            bbox_drawable->update_vertex_buffer(bbox_points);
-            bbox_drawable->update_element_buffer(bbox_indices);
-            bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
-            bbox_drawable->set_line_width(5.0f);
-            viewer->add_drawable(bbox_drawable);
-            drawables.push_back(bbox_drawable);
+            // auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+            // LOG(INFO) << "Box " << i << " center: " << box.center();
+            // float xmin = box.min_coord(0);
+            // float xmax = box.max_coord(0);
+            // float ymin = box.min_coord(1);
+            // float ymax = box.max_coord(1);
+            // float zmin = box.min_coord(2);
+            // float zmax = box.max_coord(2);
+            // const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+            //                                        vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+            //                                        vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+            //                                        vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            // const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+            //                                                 1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            // bbox_drawable->update_vertex_buffer(bbox_points);
+            // bbox_drawable->update_element_buffer(bbox_indices);
+            // bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+            // bbox_drawable->set_line_width(5.0f);
+            // viewer->add_drawable(bbox_drawable);
+            // drawables.push_back(bbox_drawable);
 
             auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
             auto axis = cylinder.axis;
