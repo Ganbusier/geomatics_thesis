@@ -28,8 +28,10 @@ add_subdirectory(${Easy3D_PATH})
 set(Easy3D_DIR ${CMAKE_SOURCE_DIR}/build)
 
 # rerun
-set(RERUN_DIR ${CMAKE_SOURCE_DIR}/3rd_party/rerun_cpp_sdk)
-add_subdirectory(${RERUN_DIR})
+include(FetchContent)
+FetchContent_Declare(rerun_sdk URL
+    https://github.com/rerun-io/rerun/releases/latest/download/rerun_cpp_sdk.zip)
+FetchContent_MakeAvailable(rerun_sdk)
 
 # include for local directory
 # include_directories( ${CMAKE_SOURCE_DIR}/include )
