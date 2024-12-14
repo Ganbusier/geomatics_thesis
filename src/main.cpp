@@ -329,8 +329,8 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
     ransac.set_input(pwn_vector);  // the pwn_vector will be reordered after RANSAC
 
-    // ransac.add_shape_factory<Cylinder>();
-    ransac.add_shape_factory<Plane>();
+    ransac.add_shape_factory<Cylinder>();
+    // ransac.add_shape_factory<Plane>();
 
     Efficient_ransac::Parameters params;
     params.normal_threshold = 0.9;
@@ -413,38 +413,38 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
         viewer->add_drawable(drawable);
         drawables.push_back(drawable);
 
-        // draw bboxs
-        for (int i = 0; i < planes.size(); i++) {
-            auto plane = planes[i];
-            LOG(INFO) << "Plane " << i << ": " << plane->info();
-            const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
-            std::vector<vec3> plane_points;
-            for (auto& index : indices) {
-                plane_points.push_back(new_points[PointCloud::Vertex(index)]);
-            }
+    //     // draw bboxs
+    //     for (int i = 0; i < planes.size(); i++) {
+    //         auto plane = planes[i];
+    //         LOG(INFO) << "Plane " << i << ": " << plane->info();
+    //         const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
+    //         std::vector<vec3> plane_points;
+    //         for (auto& index : indices) {
+    //             plane_points.push_back(new_points[PointCloud::Vertex(index)]);
+    //         }
 
-            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(plane_points);
-            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
-            LOG(INFO) << "Box " << i << " center: " << box.center();
-            float xmin = box.min_coord(0);
-            float xmax = box.max_coord(0);
-            float ymin = box.min_coord(1);
-            float ymax = box.max_coord(1);
-            float zmin = box.min_coord(2);
-            float zmax = box.max_coord(2);
-            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
-                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
-                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
-                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
-            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
-                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
-            bbox_drawable->update_vertex_buffer(bbox_points);
-            bbox_drawable->update_element_buffer(bbox_indices);
-            bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
-            bbox_drawable->set_line_width(5.0f);
-            viewer->add_drawable(bbox_drawable);
-            drawables.push_back(bbox_drawable);
-        }
+    //         const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(plane_points);
+    //         auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+    //         LOG(INFO) << "Box " << i << " center: " << box.center();
+    //         float xmin = box.min_coord(0);
+    //         float xmax = box.max_coord(0);
+    //         float ymin = box.min_coord(1);
+    //         float ymax = box.max_coord(1);
+    //         float zmin = box.min_coord(2);
+    //         float zmax = box.max_coord(2);
+    //         const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+    //                                                vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+    //                                                vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+    //                                                vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+    //         const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+    //                                                         1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+    //         bbox_drawable->update_vertex_buffer(bbox_points);
+    //         bbox_drawable->update_element_buffer(bbox_indices);
+    //         bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+    //         bbox_drawable->set_line_width(5.0f);
+    //         viewer->add_drawable(bbox_drawable);
+    //         drawables.push_back(bbox_drawable);
+    //     }
     }
 
     if (num_cylinders > 0) {

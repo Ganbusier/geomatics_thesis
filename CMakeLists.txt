@@ -14,7 +14,7 @@ if ( NOT Boost_FOUND )
 endif()
 
 # CGAL
-set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-5.6.2)
+set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-6.0.1)
 find_package(CGAL REQUIRED PATHS ${CGAL_DIR} NO_DEFAULT_PATH) 
 if ( NOT CGAL_FOUND )
   message(STATUS "This project requires the CGAL library, and will not be compiled.")
