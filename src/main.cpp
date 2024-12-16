@@ -17,11 +17,11 @@
 #include <easy3d/util/initializer.h>
 #include <easy3d/util/resource.h>
 #include <easy3d/viewer/viewer.h>
-#include <rerun.hpp>
-#include <rerun/demo_utils.hpp>
 
 #include <filesystem>
 #include <iostream>
+#include <rerun.hpp>
+#include <rerun/demo_utils.hpp>
 
 // Typedefs for CGAL RANSAC
 typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
@@ -60,6 +60,7 @@ using namespace rerun::demo;
 
 bool run_easy3d_ransac(Viewer* viewer, Model* model);
 bool run_cgal_ransac(Viewer* viewer, Model* model);
+bool run_cgal_ransac_plane(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
 bool offset_xyz(Viewer* viewer, Model* model);
 bool run_cgal_region_growing(Viewer* viewer, Model* model);
@@ -92,8 +93,8 @@ int main(int argc, char** argv) {
     viewer.set_usage(
         "'Ctrl + n': estimate normals\n"
         "'Ctrl + e': run CGAL RANSAC\n"
-        "'Shift + e': run Easy3D RANSAC");
-    viewer.bind(run_easy3d_ransac, model, Viewer::KEY_E, Viewer::MODIF_SHIFT);
+        "'Shift + e': run CGAL RANSAC Plane");
+    viewer.bind(run_cgal_ransac_plane, model, Viewer::KEY_E, Viewer::MODIF_SHIFT);
     viewer.bind(run_cgal_ransac, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
     viewer.bind(run_cgal_region_growing, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
     viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
@@ -109,19 +110,6 @@ bool show_normals(Viewer* viewer, PointCloud* cloud) {
     auto normals = cloud->get_vertex_property<vec3>("v:normal");
     auto points = cloud->get_vertex_property<vec3>("v:point");
     auto drawable = cloud->renderer()->get_points_drawable("vertices");
-
-    std::vector<rerun::Position3D> visual_points(cloud->n_vertices());
-    std::vector<rerun::Color> points_colors(cloud->n_vertices(), rerun::Color(255, 0, 0));
-
-    for (auto vertex : cloud->vertices()) {
-        auto point = points[vertex];
-        visual_points[vertex.idx()] = rerun::Position3D{point.x, point.y, point.z};
-    }
-
-    const auto rec = rerun::RecordingStream("show_normals");
-    rec.spawn().exit_on_failure();
-
-    rec.log("points", rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.5f}));
 
     // Upload the vertex normals to the GPU.
     drawable->update_normal_buffer(normals.vector());
@@ -285,8 +273,9 @@ bool run_easy3d_ransac(Viewer* viewer, Model* model) {
             drawables.push_back(bbox_drawable);
 
             auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
-            std::vector<vec3> cylinder_endpoints = {cylinder.position - cylinder.direction * box.radius(),
-                                                    cylinder.position + cylinder.direction * box.radius()};
+            std::vector<vec3> cylinder_endpoints = {
+                cylinder.position - cylinder.direction * box.radius(),
+                cylinder.position + cylinder.direction * box.radius()};
             std::vector<unsigned int> cylinder_indices = {0, 1};
             cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
             cylinder_drawable->update_element_buffer(cylinder_indices);
@@ -330,7 +319,6 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     ransac.set_input(pwn_vector);  // the pwn_vector will be reordered after RANSAC
 
     ransac.add_shape_factory<Cylinder>();
-    // ransac.add_shape_factory<Plane>();
 
     Efficient_ransac::Parameters params;
     params.normal_threshold = 0.9;
@@ -343,109 +331,15 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
 
     auto shapes = ransac.shapes();
     std::vector<Cylinder*> cylinders;
-    std::vector<Plane*> planes;
     for (auto& shape : shapes) {
         if (Cylinder* cylinder = dynamic_cast<Cylinder*>(shape.get())) {
             cylinders.push_back(cylinder);
         }
-        else if (Plane* plane = dynamic_cast<Plane*>(shape.get())) {
-            planes.push_back(plane);
-        }
     }
     int num_cylinders = cylinders.size();
-    int num_planes = planes.size();
 
     LOG(INFO) << "Detected " << num_cylinders << " cylinders, "
               << ransac.number_of_unassigned_points() << " unassigned points.";
-
-    LOG(INFO) << "Detected " << num_planes << " planes, "
-              << ransac.number_of_unassigned_points() << " unassigned points.";
-
-    if (num_planes > 0) {
-        for (auto& drawable : drawables) {
-            viewer->delete_drawable(drawable);
-        }
-        drawables.clear();
-
-        // hide default point cloud
-        auto default_drawable = cloud->renderer()->get_points_drawable("vertices");
-        default_drawable->set_visible(false);
-        default_drawable->update();
-        viewer->update();
-
-        // build new point cloud
-        PointCloud* new_cloud = new PointCloud;
-        auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
-        auto new_normals = new_cloud->add_vertex_property<vec3>("v:normal");
-        // initialize segments property to -1 which means unknown primitive type
-        auto segments = new_cloud->add_vertex_property<int>("v:primitive_index", -1);
-        for (size_t i = 0; i < pwn_vector.size(); i++) {
-            auto pwn = pwn_vector[i];
-            auto& point = pwn.first;
-            auto& normal = pwn.second;
-            new_cloud->add_vertex(vec3(point.x(), point.y(), point.z()));
-            new_normals[PointCloud::Vertex(i)] = vec3(normal.x(), normal.y(), normal.z());
-        }
-
-        for (size_t i = 0; i < planes.size(); i++) {
-            auto plane = planes[i];
-            const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
-            for (auto& index : indices) {
-                PointCloud::Vertex v(index);
-                segments[v] = i;
-            }
-        }
-
-        // draw new point cloud
-        const std::string color_name = "v:color-segments";
-        auto coloring = new_cloud->vertex_property<vec3>(color_name, vec3(0.0f));
-        Renderer::color_from_segmentation(new_cloud, segments, coloring);
-
-        auto drawable = new PointsDrawable("vertices");
-        drawable->set_property_coloring(State::VERTEX, color_name);
-        drawable->set_impostor_type(PointsDrawable::PLAIN);
-        drawable->set_point_size(3.0f);
-
-        drawable->update_vertex_buffer(new_points.vector());
-        drawable->update_normal_buffer(new_normals.vector());
-        drawable->update_color_buffer(coloring.vector());
-
-        viewer->add_drawable(drawable);
-        drawables.push_back(drawable);
-
-    //     // draw bboxs
-    //     for (int i = 0; i < planes.size(); i++) {
-    //         auto plane = planes[i];
-    //         LOG(INFO) << "Plane " << i << ": " << plane->info();
-    //         const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
-    //         std::vector<vec3> plane_points;
-    //         for (auto& index : indices) {
-    //             plane_points.push_back(new_points[PointCloud::Vertex(index)]);
-    //         }
-
-    //         const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(plane_points);
-    //         auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
-    //         LOG(INFO) << "Box " << i << " center: " << box.center();
-    //         float xmin = box.min_coord(0);
-    //         float xmax = box.max_coord(0);
-    //         float ymin = box.min_coord(1);
-    //         float ymax = box.max_coord(1);
-    //         float zmin = box.min_coord(2);
-    //         float zmax = box.max_coord(2);
-    //         const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
-    //                                                vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
-    //                                                vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
-    //                                                vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
-    //         const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
-    //                                                         1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
-    //         bbox_drawable->update_vertex_buffer(bbox_points);
-    //         bbox_drawable->update_element_buffer(bbox_indices);
-    //         bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
-    //         bbox_drawable->set_line_width(5.0f);
-    //         viewer->add_drawable(bbox_drawable);
-    //         drawables.push_back(bbox_drawable);
-    //     }
-    }
 
     if (num_cylinders > 0) {
         // clear previous viewer drawables
@@ -511,26 +405,26 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             }
 
             const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
-            // auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
-            // LOG(INFO) << "Box " << i << " center: " << box.center();
-            // float xmin = box.min_coord(0);
-            // float xmax = box.max_coord(0);
-            // float ymin = box.min_coord(1);
-            // float ymax = box.max_coord(1);
-            // float zmin = box.min_coord(2);
-            // float zmax = box.max_coord(2);
-            // const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
-            //                                        vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
-            //                                        vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
-            //                                        vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
-            // const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
-            //                                                 1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
-            // bbox_drawable->update_vertex_buffer(bbox_points);
-            // bbox_drawable->update_element_buffer(bbox_indices);
-            // bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
-            // bbox_drawable->set_line_width(5.0f);
-            // viewer->add_drawable(bbox_drawable);
-            // drawables.push_back(bbox_drawable);
+            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+            LOG(INFO) << "Box " << i << " center: " << box.center();
+            float xmin = box.min_coord(0);
+            float xmax = box.max_coord(0);
+            float ymin = box.min_coord(1);
+            float ymax = box.max_coord(1);
+            float zmin = box.min_coord(2);
+            float zmax = box.max_coord(2);
+            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            bbox_drawable->update_vertex_buffer(bbox_points);
+            bbox_drawable->update_element_buffer(bbox_indices);
+            bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+            bbox_drawable->set_line_width(5.0f);
+            viewer->add_drawable(bbox_drawable);
+            drawables.push_back(bbox_drawable);
 
             auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
             auto axis = cylinder->axis();
@@ -553,6 +447,130 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
             viewer->add_drawable(cylinder_drawable);
             drawables.push_back(cylinder_drawable);
         }
+    }
+    return true;
+}
+
+bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    if (!normals) {
+        bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
+        normals = cloud->get_vertex_property<vec3>("v:normal");
+        if (!estimate_normals) {
+            LOG(WARNING) << "No normals found or estimated for point cloud";
+            return false;
+        }
+    }
+
+    LOG(INFO) << "Constructing point_with_normal_vector";
+    Pwn_vector pwn_vector;
+    for (const auto& vertex : cloud->vertices()) {
+        const easy3d::vec3 p = points[vertex];
+        const easy3d::vec3 n = normals[vertex];
+        pwn_vector.emplace_back(Kernel::Point_3(p[0], p[1], p[2]),
+                                Kernel::Vector_3(n[0], n[1], n[2]));
+    }
+
+    LOG(INFO) << "Running CGAL RANSAC to detect planes";
+    Efficient_ransac ransac;
+
+    ransac.set_input(pwn_vector);  // the pwn_vector will be reordered after RANSAC
+
+    ransac.add_shape_factory<Plane>();
+
+    Efficient_ransac::Parameters params;
+    params.normal_threshold = 0.9;
+    params.probability = 0.001;
+    params.min_points = 10;
+    params.epsilon = 0.05;
+    params.cluster_epsilon = 3.0;
+
+    ransac.detect(params);
+
+    auto shapes = ransac.shapes();
+    std::vector<Plane*> planes;
+    for (auto& shape : shapes) {
+        if (Plane* plane = dynamic_cast<Plane*>(shape.get())) {
+            planes.push_back(plane);
+        }
+    }
+    int num_planes = planes.size();
+    LOG(INFO) << "Detected " << num_planes << " planes, " << ransac.number_of_unassigned_points()
+              << " unassigned points.";
+
+    if (num_planes > 0) {
+        // build new point cloud
+        PointCloud* new_cloud = new PointCloud;
+        auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
+        auto new_normals = new_cloud->add_vertex_property<vec3>("v:normal");
+        // initialize segments property to -1 which means unknown primitive type
+        auto segments = new_cloud->add_vertex_property<int>("v:primitive_index", -1);
+        for (size_t i = 0; i < pwn_vector.size(); i++) {
+            auto pwn = pwn_vector[i];
+            auto& point = pwn.first;
+            auto& normal = pwn.second;
+            new_cloud->add_vertex(vec3(point.x(), point.y(), point.z()));
+            new_normals[PointCloud::Vertex(i)] = vec3(normal.x(), normal.y(), normal.z());
+        }
+
+        for (size_t i = 0; i < planes.size(); i++) {
+            auto plane = planes[i];
+            const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
+            for (auto& index : indices) {
+                PointCloud::Vertex v(index);
+                segments[v] = i;
+            }
+        }
+
+        const std::string color_name = "v:color-segments";
+        auto coloring = new_cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        Renderer::color_from_segmentation(new_cloud, segments, coloring);
+
+        // create rerun logger
+        const auto rec = rerun::RecordingStream("cgal_ransac_plane");
+        rec.spawn().exit_on_failure();
+        size_t plane_index = 0;
+        
+        // log assigned points of each plane to rerun
+        for (auto& plane : planes) {
+            std::vector<std::size_t> indices = plane->indices_of_assigned_points();
+            std::vector<rerun::Position3D> visual_points(indices.size());
+            std::vector<rerun::Color> points_colors(indices.size(), rerun::Color(255, 0, 0));
+            size_t i = 0;
+            for (auto& index : plane->indices_of_assigned_points()) {
+                PointCloud::Vertex v(index);
+                auto point = new_points[v];
+                auto color = coloring[v];
+                visual_points[i] = rerun::Position3D{point.x, point.y, point.z};
+                points_colors[i] =
+                    rerun::Color(round(color.x * 255), round(color.y * 255), round(color.z * 255));
+                i++;
+            }
+            rec.log("points" + std::to_string(plane_index),
+                    rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.1f}));
+            plane_index++;
+        }
+
+        // log unassigned points to rerun
+        auto begin = ransac.indices_of_unassigned_points().begin();
+        auto end = ransac.indices_of_unassigned_points().end();
+        const size_t unassigned_points_size = ransac.number_of_unassigned_points();
+        std::vector<rerun::Position3D> visual_points(unassigned_points_size);
+        std::vector<rerun::Color> points_colors(unassigned_points_size, rerun::Color(0, 0, 0));
+        int i = 0;
+        for (auto it = begin; it != end; it++) {
+            auto point_with_normal = *(pwn_vector.begin() + *it);
+            auto point = point_with_normal.first;
+            auto p = vec3(point.x(), point.y(), point.z());
+            visual_points[i] = rerun::Position3D{p.x, p.y, p.z};
+            i++;
+        }
+        rec.log("unassigned_points",
+                rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.1f}));
     }
     return true;
 }
@@ -696,10 +714,12 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
             // float ymax = box.max_coord(1);
             // float zmin = box.min_coord(2);
             // float zmax = box.max_coord(2);
-            // const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
-            //                                        vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
-            //                                        vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
-            //                                        vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            // const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin,
+            // zmax),
+            //                                        vec3(xmin, ymax, zmax), vec3(xmax, ymax,
+            //                                        zmax), vec3(xmin, ymin, zmin), vec3(xmax,
+            //                                        ymin, zmin), vec3(xmin, ymax, zmin),
+            //                                        vec3(xmax, ymax, zmin)};
             // const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
             //                                                 1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
             // bbox_drawable->update_vertex_buffer(bbox_points);

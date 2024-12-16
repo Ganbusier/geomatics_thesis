@@ -41,7 +41,7 @@ FILE(GLOB SRC_FILES src/main.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_link_libraries(${PROJECT_NAME}
                       PUBLIC
-                      ${CGAL_LIBRARIES} 
+                      CGAL::CGAL 
                       easy3d::viewer 
                       easy3d::algo 
                       easy3d::core 
