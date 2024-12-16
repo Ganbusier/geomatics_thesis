@@ -23,6 +23,8 @@
 #include <rerun.hpp>
 #include <rerun/demo_utils.hpp>
 
+#include "ransac_2d.h"
+
 // Typedefs for CGAL RANSAC
 typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
 typedef Kernel::FT FT;

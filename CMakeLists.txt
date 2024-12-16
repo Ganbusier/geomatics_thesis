@@ -34,7 +34,7 @@ FetchContent_Declare(rerun_sdk URL
 FetchContent_MakeAvailable(rerun_sdk)
 
 # include for local directory
-# include_directories( ${CMAKE_SOURCE_DIR}/include )
+include_directories( ${CMAKE_SOURCE_DIR}/include )
 
 # Creating entries for all C++ files from src directory
 FILE(GLOB SRC_FILES src/main.cpp)
