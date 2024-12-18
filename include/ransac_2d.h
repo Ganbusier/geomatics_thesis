@@ -45,13 +45,13 @@ class Ransac_2d {
             size_t index1 = std::rand() % indices.size();
             size_t index2 = std::rand() % indices.size();
             while (index1 == index2) {
-                index2 = std::rand() % points.size();
+                index2 = std::rand() % indices.size();
             }
             const Point& p1 = points[index1];
             const Point& p2 = points[index2];
 
             // calculate line parameters
-            double slope = (p2.y - p1.y) / (p2.x - p1.x);
+            double slope = (p2.y - p1.y) / (p2.x - p1.x + 0.0001);
             double intercept = p1.y - slope * p1.x;
 
             // count inliers
@@ -93,9 +93,10 @@ class Ransac_2d {
                              const size_t min_points = 2, const size_t min_inliers = 10,
                              const double tolerance = 0.1) {
         std::vector<Line> detected_lines;
-        std::vector<size_t> remaining_indices(points.size(), 0);
-
-        while (remaining_indices.size() >= min_points) {
+        std::vector<size_t> remaining_indices(points.size());
+        std::iota(remaining_indices.begin(), remaining_indices.end(), 0);
+        size_t iter = 0;
+        while (remaining_indices.size() >= min_inliers && iter++ < max_iterations) {
             std::vector<Point> remaining_points;
             for (size_t idx : remaining_indices) {
                 remaining_points.push_back(points[idx]);
@@ -106,7 +107,7 @@ class Ransac_2d {
             // Stop if no sufficient inliers are found
             std::vector<size_t> inliers_indices = line.inliers_indices;
             if (inliers_indices.size() < min_inliers) {
-                break;
+                continue;
             }
 
             detected_lines.push_back(line);

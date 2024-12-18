@@ -26,22 +26,21 @@
 #include "ransac_2d.h"
 
 // Typedefs for CGAL RANSAC
-typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
-typedef Kernel::FT FT;
-typedef std::pair<Kernel::Point_3, Kernel::Vector_3> Point_with_normal;
-typedef std::vector<Point_with_normal> Pwn_vector;
-typedef CGAL::First_of_pair_property_map<Point_with_normal> Point_map;
-typedef CGAL::Second_of_pair_property_map<Point_with_normal> Normal_map;
+using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
+using FT = Kernel::FT;
+using Point_with_normal = std::pair<Kernel::Point_3, Kernel::Vector_3>;
+using Pwn_vector = std::vector<Point_with_normal>;
+using Point_map = CGAL::First_of_pair_property_map<Point_with_normal>;
+using Normal_map = CGAL::Second_of_pair_property_map<Point_with_normal>;
 
-typedef CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, Pwn_vector, Point_map, Normal_map>
-    Traits;
-typedef CGAL::Shape_detection::Efficient_RANSAC<Traits> Efficient_ransac;
-typedef CGAL::Shape_detection::Cylinder<Traits> Cylinder;
-typedef CGAL::Shape_detection::Plane<Traits> Plane;
-typedef CGAL::Shape_detection::Sphere<Traits> Sphere;
+using Traits = CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, Pwn_vector, Point_map, Normal_map>;
+using Efficient_ransac = CGAL::Shape_detection::Efficient_RANSAC<Traits>;
+using Cylinder = CGAL::Shape_detection::Cylinder<Traits>;
+using Plane = CGAL::Shape_detection::Plane<Traits>;
+using Sphere = CGAL::Shape_detection::Sphere<Traits>;
 
-typedef CGAL::Point_3<CGAL::Epick> Point_3;
-typedef CGAL::Vector_3<CGAL::Epick> Vector_3;
+using Point_3 = CGAL::Point_3<CGAL::Epick>;
+using Vector_3 = CGAL::Vector_3<CGAL::Epick>;
 
 // Typedefs for CGAL Region growing
 using Kernel_rg = CGAL::Simple_cartesian<double>;
@@ -53,9 +52,12 @@ using Point_map_rg = typename Point_set::Point_map;
 using Normal_map_rg = typename Point_set::Vector_map;
 
 using Neighbor_query = CGAL::Shape_detection::Point_set::K_neighbor_query_for_point_set<Point_set>;
-using Region_type =
+using Cylinder_Region_type =
     CGAL::Shape_detection::Point_set::Least_squares_cylinder_fit_region_for_point_set<Point_set>;
-using Region_growing = CGAL::Shape_detection::Region_growing<Neighbor_query, Region_type>;
+using Plane_Region_type = 
+    CGAL::Shape_detection::Point_set::Least_squares_plane_fit_region_for_point_set<Point_set>;
+using Cylinder_Region_growing = CGAL::Shape_detection::Region_growing<Neighbor_query, Cylinder_Region_type>;
+using Plane_Region_growing = CGAL::Shape_detection::Region_growing<Neighbor_query, Plane_Region_type>;
 
 using namespace easy3d;
 using namespace rerun::demo;
@@ -327,7 +329,7 @@ bool run_cgal_ransac(Viewer* viewer, Model* model) {
     params.probability = 0.001;
     params.min_points = 2;
     params.epsilon = 0.05;
-    params.cluster_epsilon = 1.0;
+    params.cluster_epsilon = 0.1;
 
     ransac.detect(params);
 
@@ -485,11 +487,11 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
     ransac.add_shape_factory<Plane>();
 
     Efficient_ransac::Parameters params;
-    params.normal_threshold = 0.9;
-    params.probability = 0.001;
-    params.min_points = 10;
-    params.epsilon = 0.05;
-    params.cluster_epsilon = 3.0;
+    params.normal_threshold = 0.8;
+    params.probability = 0.01;
+    params.min_points = 4;
+    params.epsilon = 0.1;
+    params.cluster_epsilon = 1.0;
 
     ransac.detect(params);
 
@@ -535,25 +537,81 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
         // create rerun logger
         const auto rec = rerun::RecordingStream("cgal_ransac_plane");
         rec.spawn().exit_on_failure();
+
+        // perform 2D ransac on assigned points of each plane
         size_t plane_index = 0;
-        
-        // log assigned points of each plane to rerun
         for (auto& plane : planes) {
             std::vector<std::size_t> indices = plane->indices_of_assigned_points();
-            std::vector<rerun::Position3D> visual_points(indices.size());
             std::vector<rerun::Color> points_colors(indices.size(), rerun::Color(255, 0, 0));
+            std::vector<rerun::Position3D> points3d(indices.size());
+            std::vector<rerun::Position2D> points2d(indices.size());
+            std::vector<Ransac_2d::Point> points_2d(indices.size());
             size_t i = 0;
             for (auto& index : plane->indices_of_assigned_points()) {
                 PointCloud::Vertex v(index);
                 auto point = new_points[v];
                 auto color = coloring[v];
-                visual_points[i] = rerun::Position3D{point.x, point.y, point.z};
+                points3d[i] = rerun::Position3D{point.x, point.y, point.z};
                 points_colors[i] =
                     rerun::Color(round(color.x * 255), round(color.y * 255), round(color.z * 255));
+
+                // construct 2d points for 2D RANSAC
+                auto p = pwn_vector[index].first;
+                auto p_2d = plane->to_2d(p);
+                Ransac_2d::Point point_2d;
+                point_2d.x = p_2d.x();
+                point_2d.y = p_2d.y();
+                points_2d[i] = point_2d;
+                points2d[i] = rerun::Position2D{static_cast<float>(point_2d.x), static_cast<float>(point_2d.y)};
                 i++;
             }
+
+            // RANSAC parameters
+            size_t max_iterations = 1000;
+            size_t min_points = 2;
+            size_t min_inliers = 6;
+            double tolerance = 1.0;
+
+            // perform 2D RANSAC
+            Ransac_2d ransac2D;
+            std::vector<Ransac_2d::Line> lines =
+                ransac2D.detect(points_2d, max_iterations, min_points, min_inliers, tolerance);
+            LOG(INFO) << "Plane" << plane_index << ": detect " << lines.size() << " lines.";
+            if (lines.size() == 0) {
+                continue;
+            }
+            
+            // construct 3D lines from 2D lines
+            std::vector<rerun::Collection<rerun::Vec3D>> strips;
+            std::vector<rerun::Collection<rerun::Vec2D>> strips2d;
+            size_t line_idx = 0;
+            for (const auto& line : lines) {
+                LOG(INFO) << "line " << line_idx << ": " << line.slope << "x + " << line.intercept;
+                auto start_2d = Kernel::Point_2(line.start.x, line.start.y);
+                auto end_2d = Kernel::Point_2(line.end.x, line.end.y);
+                rerun::Collection<rerun::Vec2D> strip2d = {
+                    {static_cast<float>(start_2d.x()), static_cast<float>(start_2d.y())},
+                    {static_cast<float>(end_2d.x()), static_cast<float>(end_2d.y())}
+                };
+                auto start = plane->to_3d(start_2d);
+                auto end = plane->to_3d(end_2d);
+                rerun::Collection<rerun::Vec3D> strip = {
+                    {static_cast<float>(start.x()), static_cast<float>(start.y()), static_cast<float>(start.z())},
+                    {static_cast<float>(end.x()), static_cast<float>(end.y()), static_cast<float>(end.z())}
+                };
+                strips.push_back(strip);
+                strips2d.push_back(strip2d);
+                line_idx++;
+            }
+
+            // log points and lines to rerun
             rec.log("points" + std::to_string(plane_index),
-                    rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.1f}));
+                    rerun::Points3D(points3d).with_colors(points_colors).with_radii({0.1f}));
+            rec.log("segments" + std::to_string(plane_index), rerun::LineStrips3D(strips).with_radii({0.1f}));
+
+            rec.log("2D_points", rerun::Points2D(points2d).with_colors(points_colors).with_radii({0.1f}));
+            rec.log("2D_segments", rerun::LineStrips2D(strips2d).with_radii({0.1f}));
+
             plane_index++;
         }
 
@@ -604,7 +662,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
     LOG(INFO) << "Running CGAL region growing";
 
     // set up region growing parameters
-    const std::size_t k = 5;
+    const std::size_t k = 16;
     const FT max_distance = FT(0.1);
     const FT max_angle = FT(25);
     const FT min_radius = FT(0.01);
@@ -615,22 +673,28 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
     Neighbor_query neighbor_query = CGAL::Shape_detection::Point_set::make_k_neighbor_query(
         point_set, CGAL::parameters::k_neighbors(k));
 
-    Region_type region_type =
-        CGAL::Shape_detection::Point_set::make_least_squares_cylinder_fit_region(
+    // Cylinder_Region_type cylinder_region_type =
+    //     CGAL::Shape_detection::Point_set::make_least_squares_cylinder_fit_region(
+    //         point_set, CGAL::parameters::maximum_distance(max_distance)
+    //                        .maximum_angle(max_angle)
+    //                        .minimum_radius(min_radius)
+    //                        .maximum_radius(max_radius)
+    //                        .minimum_region_size(min_region_size));
+
+    Plane_Region_type plane_region_type =
+        CGAL::Shape_detection::Point_set::make_least_squares_plane_fit_region(
             point_set, CGAL::parameters::maximum_distance(max_distance)
                            .maximum_angle(max_angle)
-                           .minimum_radius(min_radius)
-                           .maximum_radius(max_radius)
                            .minimum_region_size(min_region_size));
 
     // create an instance of the class Region_growing
-    Region_growing region_growing(point_set, neighbor_query, region_type);
+    Plane_Region_growing region_growing(point_set, neighbor_query, plane_region_type);
 
     // run the region growing algorithm
     CGAL::Random random;
     std::size_t num_cylinders = 0;
     std::size_t num_unassigned_points = point_set.size();
-    std::vector<typename Region_growing::Primitive_and_region> regions;
+    std::vector<typename Plane_Region_growing::Primitive_and_region> regions;
     region_growing.detect(std::back_inserter(regions));
 
     LOG(INFO) << "Detected " << regions.size() << " cylinders.";
@@ -694,62 +758,62 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
         viewer->add_drawable(drawable);
         drawables.push_back(drawable);
 
-        for (size_t i = 0; i < regions.size(); ++i) {
-            const auto& primitive_and_region = regions[i];
-            const auto& cylinder = primitive_and_region.first;
-            LOG(INFO) << "Cylinder " << i << " center: " << cylinder.axis.point(0)
-                      << " radius: " << cylinder.radius
-                      << " direction: " << cylinder.axis.to_vector();
+        // for (size_t i = 0; i < regions.size(); ++i) {
+        //     const auto& primitive_and_region = regions[i];
+        //     const auto& cylinder = primitive_and_region.first;
+        //     LOG(INFO) << "Cylinder " << i << " center: " << cylinder.axis.point(0)
+        //               << " radius: " << cylinder.radius
+        //               << " direction: " << cylinder.axis.to_vector();
 
-            const auto& indices = primitive_and_region.second;
-            std::vector<vec3> cylinder_points;
-            for (auto& index : indices) {
-                cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
-            }
+        //     const auto& indices = primitive_and_region.second;
+        //     std::vector<vec3> cylinder_points;
+        //     for (auto& index : indices) {
+        //         cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
+        //     }
 
-            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
-            // auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
-            // LOG(INFO) << "Box " << i << " center: " << box.center();
-            // float xmin = box.min_coord(0);
-            // float xmax = box.max_coord(0);
-            // float ymin = box.min_coord(1);
-            // float ymax = box.max_coord(1);
-            // float zmin = box.min_coord(2);
-            // float zmax = box.max_coord(2);
-            // const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin,
-            // zmax),
-            //                                        vec3(xmin, ymax, zmax), vec3(xmax, ymax,
-            //                                        zmax), vec3(xmin, ymin, zmin), vec3(xmax,
-            //                                        ymin, zmin), vec3(xmin, ymax, zmin),
-            //                                        vec3(xmax, ymax, zmin)};
-            // const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
-            //                                                 1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
-            // bbox_drawable->update_vertex_buffer(bbox_points);
-            // bbox_drawable->update_element_buffer(bbox_indices);
-            // bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
-            // bbox_drawable->set_line_width(5.0f);
-            // viewer->add_drawable(bbox_drawable);
-            // drawables.push_back(bbox_drawable);
+        //     const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+        //     auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+        //     LOG(INFO) << "Box " << i << " center: " << box.center();
+        //     float xmin = box.min_coord(0);
+        //     float xmax = box.max_coord(0);
+        //     float ymin = box.min_coord(1);
+        //     float ymax = box.max_coord(1);
+        //     float zmin = box.min_coord(2);
+        //     float zmax = box.max_coord(2);
+        //     const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin,
+        //     zmax),
+        //                                            vec3(xmin, ymax, zmax), vec3(xmax, ymax,
+        //                                            zmax), vec3(xmin, ymin, zmin), vec3(xmax,
+        //                                            ymin, zmin), vec3(xmin, ymax, zmin),
+        //                                            vec3(xmax, ymax, zmin)};
+        //     const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+        //                                                     1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+        //     bbox_drawable->update_vertex_buffer(bbox_points);
+        //     bbox_drawable->update_element_buffer(bbox_indices);
+        //     bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+        //     bbox_drawable->set_line_width(5.0f);
+        //     viewer->add_drawable(bbox_drawable);
+        //     drawables.push_back(bbox_drawable);
 
-            auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
-            auto axis = cylinder.axis;
-            auto center_point = axis.point(0);
-            auto direction = axis.to_vector();
-            auto start_point = center_point + direction * box.radius();
-            auto end_point = center_point - direction * box.radius();
-            auto radius = cylinder.radius;
-            std::vector<vec3> cylinder_endpoints = {
-                vec3(start_point.x(), start_point.y(), start_point.z()),
-                vec3(end_point.x(), end_point.y(), end_point.z())};
-            std::vector<unsigned int> cylinder_indices = {0, 1};
-            cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
-            cylinder_drawable->update_element_buffer(cylinder_indices);
-            cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
-            cylinder_drawable->set_line_width(2.0 * radius);
-            cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
-            viewer->add_drawable(cylinder_drawable);
-            drawables.push_back(cylinder_drawable);
-        }
+        //     auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
+        //     auto axis = cylinder.axis;
+        //     auto center_point = axis.point(0);
+        //     auto direction = axis.to_vector();
+        //     auto start_point = center_point + direction * box.radius();
+        //     auto end_point = center_point - direction * box.radius();
+        //     auto radius = cylinder.radius;
+        //     std::vector<vec3> cylinder_endpoints = {
+        //         vec3(start_point.x(), start_point.y(), start_point.z()),
+        //         vec3(end_point.x(), end_point.y(), end_point.z())};
+        //     std::vector<unsigned int> cylinder_indices = {0, 1};
+        //     cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
+        //     cylinder_drawable->update_element_buffer(cylinder_indices);
+        //     cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
+        //     cylinder_drawable->set_line_width(2.0 * radius);
+        //     cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+        //     viewer->add_drawable(cylinder_drawable);
+        //     drawables.push_back(cylinder_drawable);
+        // }
     }
 
     return true;
