@@ -13,12 +13,31 @@ if ( NOT Boost_FOUND )
   return()
 endif()
 
+# OSQP for CGAL shape regularization
+find_package(OSQP REQUIRED)
+
+if ( NOT OSQP_FOUND )
+  message(STATUS "This project requires the OSQP library, and will not be compiled.")
+  return()
+endif()
+set(OSQP_INCLUDE_DIR "C:/Program Files (x86)/osqp/include")
+set(OSQP_LIBRARIES "C:/Program Files (x86)/osqp/lib/osqp.lib")
+message(STATUS "OSQP_INCLUDE_DIR: ${OSQP_INCLUDE_DIR}")
+message(STATUS "OSQP_LIBRARY: ${OSQP_LIBRARIES}")
+
+
 # CGAL
 set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-6.0.1)
 find_package(CGAL REQUIRED PATHS ${CGAL_DIR} NO_DEFAULT_PATH) 
 if ( NOT CGAL_FOUND )
   message(STATUS "This project requires the CGAL library, and will not be compiled.")
   return()
+endif()
+
+# Import CGAL::OSQP_support
+include("${CGAL_DIR}/cmake/modules/CGAL_OSQP_support.cmake")
+if (NOT TARGET CGAL::OSQP_support)
+    message(FATAL_ERROR "Failed to load CGAL::OSQP_support.")
 endif()
 
 # Easy3D
@@ -42,6 +61,7 @@ add_executable(${PROJECT_NAME} ${SRC_FILES})
 target_link_libraries(${PROJECT_NAME}
                       PUBLIC
                       CGAL::CGAL 
+                      CGAL::OSQP_support
                       easy3d::viewer 
                       easy3d::algo 
                       easy3d::core 
