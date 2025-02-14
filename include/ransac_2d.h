@@ -1,12 +1,14 @@
 #ifndef RANSAC_2D_H
 #define RANSAC_2D_H
 
-#include <stdio.h>
-#include <stdlib.h>
-
+#include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <ctime>
+#include <numeric>
+#include <random>
+#include <set>
 #include <vector>
 
 
@@ -18,112 +20,150 @@ class Ransac_2d {
     };
 
     struct Line {
-        double slope;
-        double intercept;
+        double a;  // ax + by + c = 0
+        double b;
+        double c;
         Point start;
         Point end;
-        std::vector<Point> inliers;
-        std::vector<size_t> inliers_indices;
+        std::vector<size_t> inlier_indices;
     };
 
-   protected:
-    double distance(Point p1, Point p2) {
-        double dx = p2.x - p1.x;
-        double dy = p2.y - p1.y;
-        return sqrt(dx * dx + dy * dy);
+   private:
+    std::mt19937 rng{std::random_device{}()};  // random number generator
+
+    // compute normalized line parameters
+    Line computeLineModel(const Point& p1, const Point& p2) {
+        Line line;
+        line.a = p1.y - p2.y;
+        line.b = p2.x - p1.x;
+        line.c = p1.x * p2.y - p2.x * p1.y;
+
+        // normalize line
+        const double norm = std::hypot(line.a, line.b);
+        if (norm < 1e-6) return line;  // avoid divided by zero
+        line.a /= norm;
+        line.b /= norm;
+        line.c /= norm;
+
+        return line;
     }
 
-    Line detect_single_line(const std::vector<Point>& points, const std::vector<size_t>& indices,
-                            const size_t max_iterations, const size_t min_points,
-                            const size_t min_inliers, const size_t tolerance) {
-        std::srand(std::time(nullptr));
-        Line bestline;
-        int bestInlierNums = 0;
+    // point to line distance
+    double distanceToLine(const Point& p, const Line& line) {
+        return std::abs(line.a * p.x + line.b * p.y + line.c);
+    }
 
-        for (int i = 0; i < max_iterations; ++i) {
-            // pick two points randomly
-            size_t index1 = std::rand() % indices.size();
-            size_t index2 = std::rand() % indices.size();
-            while (index1 == index2) {
-                index2 = std::rand() % indices.size();
-            }
-            const Point& p1 = points[index1];
-            const Point& p2 = points[index2];
+    // use PCA to optimize the two end points of a line
+    void refineLineWithPCA(Line& line, const std::vector<Point>& inliers) {
+        if (inliers.size() < 2) return;
 
-            // calculate line parameters
-            double slope = (p2.y - p1.y) / (p2.x - p1.x + 0.0001);
-            double intercept = p1.y - slope * p1.x;
+        // mean point
+        Eigen::Vector2d mean(0, 0);
+        for (const auto& p : inliers) {
+            mean[0] += p.x;
+            mean[1] += p.y;
+        }
+        mean /= inliers.size();
 
-            // count inliers
-            std::vector<Point> inliers;
-            std::vector<size_t> inliers_indices;
-            for (size_t idx = 0; idx < points.size(); ++idx) {
-                const Point& p = points[idx];
-                double d = std::abs(p.y - slope * p.x - intercept) / std::sqrt(1 + slope * slope);
-                if (d < tolerance) {
-                    inliers.push_back(p);
-                    inliers_indices.push_back(indices[idx]);
-                }
-            }
+        // covariance matrix
+        Eigen::Matrix2d cov = Eigen::Matrix2d::Zero();
+        for (const auto& p : inliers) {
+            Eigen::Vector2d v(p.x - mean[0], p.y - mean[1]);
+            cov += v * v.transpose();
+        }
+        cov /= inliers.size();
 
-            // update best line
-            if (inliers.size() > bestInlierNums && inliers.size() >= min_inliers) {
-                bestInlierNums = inliers.size();
-                bestline.slope = slope;
-                bestline.intercept = intercept;
-                bestline.inliers = inliers;
-                bestline.inliers_indices = inliers_indices;
-            }
+        // eigen decomposition
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> solver(cov);
+        Eigen::Vector2d direction = solver.eigenvectors().col(1);  // main direction
+
+        // project all points to the main direction
+        std::vector<double> projections;
+        for (const auto& p : inliers) {
+            Eigen::Vector2d v(p.x - mean[0], p.y - mean[1]);
+            projections.push_back(v.dot(direction));
         }
 
-        // calcualte end points of the best line
-        if (!bestline.inliers.empty()) {
-            auto x_minmax =
-                std::minmax_element(bestline.inliers.begin(), bestline.inliers.end(),
-                                    [](const Point& p1, const Point& p2) { return p1.x < p2.x; });
-            bestline.start = *x_minmax.first;
-            bestline.end = *x_minmax.second;
-        }
+        // find min and max of projected points
+        auto minmax = std::minmax_element(projections.begin(), projections.end());
+        double min_proj = *minmax.first;
+        double max_proj = *minmax.second;
 
-        return bestline;
+        // calculate end points
+        line.start.x = mean[0] + min_proj * direction[0];
+        line.start.y = mean[1] + min_proj * direction[1];
+        line.end.x = mean[0] + max_proj * direction[0];
+        line.end.y = mean[1] + max_proj * direction[1];
     }
 
    public:
-    std::vector<Line> detect(const std::vector<Point>& points, const size_t max_iterations = 100,
-                             const size_t min_points = 2, const size_t min_inliers = 10,
-                             const double tolerance = 0.1) {
-        std::vector<Line> detected_lines;
+    std::vector<Line> detect(const std::vector<Point>& points, size_t max_iterations = 1000,
+                             size_t min_inliers = 2, double tolerance = 0.1) {
+        std::vector<Line> lines;
         std::vector<size_t> remaining_indices(points.size());
         std::iota(remaining_indices.begin(), remaining_indices.end(), 0);
-        size_t iter = 0;
-        while (remaining_indices.size() >= min_inliers && iter++ < max_iterations) {
-            std::vector<Point> remaining_points;
-            for (size_t idx : remaining_indices) {
-                remaining_points.push_back(points[idx]);
-            }
-            Line line = detect_single_line(remaining_points, remaining_indices, max_iterations,
-                                           min_points, min_inliers, tolerance);
 
-            // Stop if no sufficient inliers are found
-            std::vector<size_t> inliers_indices = line.inliers_indices;
-            if (inliers_indices.size() < min_inliers) {
-                continue;
-            }
+        while (remaining_indices.size() >= min_inliers) {
+            Line best_line;
+            size_t best_inliers = 0;
 
-            detected_lines.push_back(line);
+            for (size_t iter = 0; iter < max_iterations; ++iter) {
+                // sample two points randomly
+                std::vector<size_t> shuffled_indices = remaining_indices;
+                std::shuffle(shuffled_indices.begin(), shuffled_indices.end(), rng);
+                const Point& p1 = points[shuffled_indices[0]];
+                const Point& p2 = points[shuffled_indices[1]];
 
-            // Remove inliers' indices from the remaining indices
-            std::vector<size_t> new_remaining_indices;
-            for (size_t idx : remaining_indices) {
-                if (std::find(inliers_indices.begin(), inliers_indices.end(), idx) ==
-                    inliers_indices.end()) {
-                    new_remaining_indices.push_back(idx);
+                // pass if points are overlapped or too far
+                if (std::hypot(p1.x - p2.x, p1.y - p2.y) < 1e-6) continue;
+                if (std::hypot(p1.x - p2.x, p1.y - p2.y) > 2.0) continue;
+
+                // compute candidate line
+                Line candidate_line = computeLineModel(p1, p2);
+
+                // count inliers
+                std::vector<size_t> candidate_inliers;
+                for (size_t idx : remaining_indices) {
+                    const Point& p = points[idx];
+                    if (distanceToLine(p, candidate_line) < tolerance) {
+                        candidate_inliers.push_back(idx);
+                    }
+                }
+
+                // update the best line
+                if (candidate_inliers.size() > best_inliers) {
+                    best_inliers = candidate_inliers.size();
+                    best_line = candidate_line;
+                    best_line.inlier_indices = candidate_inliers;
                 }
             }
-            remaining_indices = new_remaining_indices;
+
+            if (best_inliers >= min_inliers) {
+                // use PCA to optimize end points of a line
+                std::vector<Point> inlier_points;
+                for (auto idx : best_line.inlier_indices) {
+                    inlier_points.push_back(points[idx]);
+                }
+                refineLineWithPCA(best_line, inlier_points);
+
+                lines.push_back(best_line);
+
+                // remove inliers
+                std::vector<size_t> new_remaining;
+                std::set<size_t> inlier_set(best_line.inlier_indices.begin(),
+                                            best_line.inlier_indices.end());
+                for (size_t idx : remaining_indices) {
+                    if (!inlier_set.count(idx)) {
+                        new_remaining.push_back(idx);
+                    }
+                }
+                remaining_indices = new_remaining;
+            } else {
+                break;  // if not enough inliers, terminate
+            }
         }
 
-        return detected_lines;
+        return lines;
     }
 };
 
