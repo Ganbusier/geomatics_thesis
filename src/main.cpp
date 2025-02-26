@@ -510,10 +510,10 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
     ransac.add_shape_factory<Plane>();
 
     Efficient_ransac::Parameters params;
-    params.normal_threshold = 0.8;
+    params.normal_threshold = 0.01;
     params.probability = 0.01;
     params.min_points = 4;
-    params.epsilon = 0.1;
+    params.epsilon = 0.05;
     params.cluster_epsilon = 1.0;
 
     ransac.detect(params);
@@ -594,12 +594,13 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             // RANSAC parameters
             size_t max_iterations = 1000;
             size_t min_inliers = 5;
-            double tolerance = 0.05;
+            double tolerance = 0.1;
+            double split_distance_thres = 3.0;
 
             // perform 2D RANSAC
             Ransac_2d ransac2D;
             std::vector<Ransac_2d::Line> lines =
-                ransac2D.detect(points_2d, max_iterations, min_inliers, tolerance);
+                ransac2D.detect(points_2d, max_iterations, min_inliers, tolerance, split_distance_thres);
             LOG(INFO) << "Plane" << plane_index << ": detect " << lines.size() << " lines.";
             if (lines.size() == 0) {
                 plane_index++;

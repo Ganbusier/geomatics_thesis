@@ -1,4 +1,5 @@
 import numpy as np
+import time
 from plyfile import PlyData
 from typing import List
 from ransac_2d import Ransac2D, Point
@@ -20,7 +21,7 @@ def project(points: np.array) -> np.ndarray:
 
     # choose the first two biggest eigen values (the main 2D plane)
     sorted_indices = np.argsort(eigenvalues)[::-1]
-    principal_components = eigenvectors[:, [sorted_indices[0], sorted_indices[1]]]
+    principal_components = eigenvectors[:, [sorted_indices[0], sorted_indices[2]]]
 
     # project 3D points to 2D plane
     points_2d = points_centered.dot(principal_components)
@@ -55,7 +56,7 @@ def visualize(points_2d: np.ndarray, lines: List) -> None:
         # )
         # plt.scatter(inlier_points[:, 1], inlier_points[:, 0], s=10, c="red")
 
-    plt.title("2D PCA Projection and RANSAC Line Detection")
+    plt.title("2D PCA Projection and Line Detection")
     plt.xlabel("Principal Component 2")
     plt.ylabel("Principal Component 1")
     plt.legend()
@@ -86,19 +87,26 @@ def main(input_model: str, detect_mode: int = 0) -> None:
 
     # perform 2D ransac
     if detect_mode == 0:
+        start_time = time.time()
+
         ransac = Ransac2D()
-        ransac_lines = ransac.detect(
+        ransac_lines = ransac.detect_2(
             points=points_for_detection,
             max_iterations=1000,
-            min_inliers=10,
+            min_inliers=500,
             tolerance=0.05,
-            split_distance_threshold=2.0,
+            split_distance_threshold=1.0,
         )
 
+        end_time = time.time()
+        print(f"Total process time: {end_time - start_time:.4f} seconds")
+        
         visualize(points_2d, ransac_lines)
 
     # perform 2D hough transform
     elif detect_mode == 1:
+        start_time = time.time()
+
         hough = HoughTransform2D(num_theta=180, rho_resolution=0.1)
         hough_lines = hough.detect(
             points=points_for_detection,
@@ -108,6 +116,9 @@ def main(input_model: str, detect_mode: int = 0) -> None:
             split_distance_threshold=2.0,
         )
 
+        end_time = time.time()
+        print(f"Total process time: {end_time - start_time:.4f} seconds")
+
         visualize(points_2d, hough_lines)
     else:
         print("Wrong detect mode input.")
@@ -116,4 +127,5 @@ def main(input_model: str, detect_mode: int = 0) -> None:
 if __name__ == "__main__":
     input_pylon = "./resources/2024_C_44HZ1_14_pylon.ply"
     input_line = "./resources/2024_C_44HZ1_14_line.ply"
+
     main(input_pylon, detect_mode=0)

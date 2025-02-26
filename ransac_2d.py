@@ -176,19 +176,20 @@ class Ransac2D:
         lines = []
         remaining_indices = list(range(len(points)))
 
+        iter_iter = 0
         while len(remaining_indices) >= min_inliers:
-            print(len(remaining_indices))
+            print(f"Remaining indices: {len(remaining_indices)}")
             best_line = None
             best_inliers_count = 0
             best_inliers_indices = []
 
             for _ in range(max_iterations):
-                idx1, idx2 = random.sample(remaining_indices, k=2)
+                idx1, idx2 = self.rng.sample(remaining_indices, k=2)
                 p1, p2 = points[idx1], points[idx2]
 
                 dx, dy = p1.x - p2.x, p1.y - p2.y
                 distance = np.hypot(dx, dy)
-                if distance < 1e-6:
+                if distance < 1e-6 and distance > 1.0:
                     continue
 
                 # construct initial line model
@@ -216,16 +217,97 @@ class Ransac2D:
                 split_lines = self._split_line_if_needed(
                     best_line, inlier_data, distance_threshold=split_distance_threshold
                 )
+
+                valid_split_line_inliers = []
                 for l in split_lines:
                     if len(l.inlier_indices) > min_inliers:
+                        valid_split_line_inliers.extend(l.inlier_indices)
                         lines.append(l)
+
+                if not valid_split_line_inliers:
+                    iter_iter += 1
+                    if iter_iter > 10:
+                        break
+                    continue
+
                 remaining_indices = [
                     idx
                     for idx in remaining_indices
-                    if idx not in set(best_inliers_indices)
+                    if idx not in set(valid_split_line_inliers)
                 ]
+
+                iter_iter = 0
+
             else:
-                break
+                iter_iter += 1
+                if iter_iter > 10:
+                    break
+                
+        print(len(lines))
+        lines = sorted(lines, key=lambda l: len(l.inlier_indices), reverse=True)
+        return lines
+
+    def detect_2(
+        self,
+        points: List[Point],
+        max_iterations: int = 1000,
+        min_inliers: int = 500,
+        tolerance: float = 0.1,
+        split_distance_threshold: int = 5.0,
+    ) -> List[Line]:
+        lines = []
+        remaining_indices = list(range(len(points)))
+
+        while min_inliers >= 5:
+            print(f"Remaining indices: {len(remaining_indices)}, current min inliers: {min_inliers}")
+            candidate_lines = []
+
+            iter = 0
+            while iter < max_iterations and len(remaining_indices) >= min_inliers:
+                # detect valid lines
+                idx1, idx2 = self.rng.sample(remaining_indices, k=2)
+                p1, p2 = points[idx1], points[idx2]
+
+                dx, dy = p1.x - p2.x, p1.y - p2.y
+                distance = np.hypot(dx, dy)
+                if distance < 1e-6 and distance > 0.5:
+                    continue
+
+                # construct initial line model
+                candidate_line = self._compute_line_model(p1, p2)
+                # detect inliers
+                candidate_inliers = [
+                    idx
+                    for idx in remaining_indices
+                    if self._distance_to_line(points[idx], candidate_line) < tolerance
+                ]
+                candidate_line.inlier_indices = candidate_inliers
+                if len(candidate_inliers) < min_inliers:
+                    iter += 1
+                    continue
+                
+                inlier_points = [points[idx] for idx in candidate_inliers]
+                self._refine_line_with_pca(candidate_line, inlier_points)
+                inlier_data = [(points[idx], idx) for idx in candidate_inliers]
+                split_lines = self._split_line_if_needed(
+                    candidate_line, inlier_data, distance_threshold=split_distance_threshold
+                )
+                valid_split_line_indices = []
+                for l in split_lines:
+                    if len(l.inlier_indices) > min_inliers:
+                        candidate_lines.append(l)
+                        valid_split_line_indices.extend(l.inlier_indices)
+
+                remaining_indices = [
+                    idx
+                    for idx in remaining_indices
+                    if idx not in set(valid_split_line_indices)
+                ]
+
+            lines.extend(candidate_lines)
+            min_inliers = round(min_inliers * 0.9)
+            
+
         print(len(lines))
         lines = sorted(lines, key=lambda l: len(l.inlier_indices), reverse=True)
         return lines
