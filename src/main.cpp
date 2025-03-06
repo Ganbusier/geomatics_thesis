@@ -8,6 +8,7 @@
 #include <CGAL/OSQP_quadratic_program_traits.h>
 #include <CGAL/Shape_regularization/regularize_segments.h>
 #include <CGAL/property_map.h>
+#include <CGAL/Bbox_3.h>
 #include <easy3d/algo/point_cloud_normals.h>
 #include <easy3d/algo/point_cloud_ransac.h>
 #include <easy3d/core/model.h>
@@ -94,7 +95,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model);
 Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vector_3& d);
 
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
-int k_neighbors = 16;              // k-nearest neighbors for normal estimation
+int k_neighbors = 20;              // k-nearest neighbors for normal estimation
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -510,11 +511,11 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
     ransac.add_shape_factory<Plane>();
 
     Efficient_ransac::Parameters params;
-    params.normal_threshold = 0.01;
+    params.normal_threshold = 0;
     params.probability = 0.01;
-    params.min_points = 4;
-    params.epsilon = 0.05;
-    params.cluster_epsilon = 1.0;
+    params.min_points = 20;
+    params.epsilon = 0.1;
+    params.cluster_epsilon = 0.5;
 
     ransac.detect(params);
 
@@ -529,7 +530,29 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
     LOG(INFO) << "Detected " << num_planes << " planes, " << ransac.number_of_unassigned_points()
               << " unassigned points.";
     
+    // get indices of all unassigned points
+    const auto& unassigned_iter = ransac.indices_of_unassigned_points();
+    std::vector<size_t> indices_of_all_unassigned_points(
+        unassigned_iter.begin(),
+        unassigned_iter.end()
+    );
 
+    // get indices of all assigned points
+    std::vector<size_t> indices_of_all_assigned_points(pwn_vector.size());
+    std::iota(indices_of_all_assigned_points.begin(), indices_of_all_assigned_points.end(), 0);
+    indices_of_all_assigned_points.erase(
+        std::remove_if(
+            indices_of_all_assigned_points.begin(),
+            indices_of_all_assigned_points.end(),
+            [&](size_t idx) {
+                return std::find(
+                    indices_of_all_unassigned_points.begin(), 
+                    indices_of_all_unassigned_points.end(), 
+                    idx) != indices_of_all_unassigned_points.end();
+            }
+        ),
+        indices_of_all_assigned_points.end()
+    );
 
     if (num_planes > 0) {
         // build new point cloud
@@ -566,13 +589,39 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
         // perform 2D ransac on assigned points of each plane
         size_t plane_index = 0;
         for (auto& plane : planes) {
-            std::vector<std::size_t> indices = plane->indices_of_assigned_points();
+            // std::vector<std::size_t> indices = plane->indices_of_assigned_points();
+            std::vector<Point_3> assigned_points;
+            for (auto& i : plane->indices_of_assigned_points()) {
+                auto& p = pwn_vector[i].first;
+                assigned_points.push_back(p);
+            }
+            auto assigned_points_bbox = CGAL::bbox_3(assigned_points.begin(), assigned_points.end());
+            auto zmin = assigned_points_bbox.zmin();
+            auto zmax = assigned_points_bbox.zmax();
+            LOG(INFO) << plane->info();
+
+            // assign points to each plane based on another distance threshold
+            // std::vector<std::size_t> indices;
+            // for (size_t i : indices_of_all_assigned_points) {
+            //     auto& p = pwn_vector[i].first;
+            //     if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 16.0) {
+            //         indices.push_back(i);
+            //     }
+            // }
+            std::vector<std::size_t> indices;
+            for (size_t i = 0; i < pwn_vector.size(); i++) {
+                auto& p = pwn_vector[i].first;
+                if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 25) {
+                    indices.push_back(i);
+                }
+            }
+
             std::vector<rerun::Color> points_colors(indices.size(), rerun::Color(255, 0, 0));
             std::vector<rerun::Position3D> points3d(indices.size());
             std::vector<rerun::Position2D> points2d(indices.size());
             std::vector<Ransac_2d::Point> points_2d(indices.size());
             size_t i = 0;
-            for (auto& index : plane->indices_of_assigned_points()) {
+            for (auto& index : indices) {
                 PointCloud::Vertex v(index);
                 auto point = new_points[v];
                 auto color = coloring[v];
@@ -591,11 +640,11 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
                 i++;
             }
 
-            // RANSAC parameters
-            size_t max_iterations = 1000;
-            size_t min_inliers = 5;
+            // 2D RANSAC parameters
+            size_t max_iterations = 200;
+            size_t min_inliers = 4;
             double tolerance = 0.1;
-            double split_distance_thres = 3.0;
+            double split_distance_thres = 1.0;
 
             // perform 2D RANSAC
             Ransac_2d ransac2D;
@@ -609,8 +658,8 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
 
             // set QP regularization
             std::vector<Segment_2> segments2D;
-            const FT max_angle_2 = FT(10);
-            const FT max_offset_2 = FT(1.0);
+            const FT max_angle_2 = FT(5);
+            const FT max_offset_2 = FT(0.5);
 
             for (const auto& line: lines) {
                 Kernel::Point_2 p1(line.start.x, line.start.y);
@@ -708,10 +757,10 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             }
 
             // log points and lines to rerun
-            rec.log("points" + std::to_string(plane_index),
+            rec.log("points/points" + std::to_string(plane_index),
                     rerun::Points3D(points3d).with_colors(points_colors).with_radii({0.1f}));
-            rec.log("segments" + std::to_string(plane_index), rerun::LineStrips3D(strips).with_radii({0.1f}));
-            rec.log("segments_R" + std::to_string(plane_index), rerun::LineStrips3D(sr_strips3d).with_radii({0.1f}));
+            rec.log("segments/segments" + std::to_string(plane_index), rerun::LineStrips3D(strips).with_radii({0.1f}));
+            // rec.log("segments_R" + std::to_string(plane_index), rerun::LineStrips3D(sr_strips3d).with_radii({0.1f}));
 
             rec.log("2D_points", rerun::Points2D(points2d).with_colors(points_colors).with_radii({0.1f}));
             rec.log("2D_segments", rerun::LineStrips2D(strips2d).with_radii({0.1f}));
@@ -725,7 +774,7 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
         auto end = ransac.indices_of_unassigned_points().end();
         const size_t unassigned_points_size = ransac.number_of_unassigned_points();
         std::vector<rerun::Position3D> visual_points(unassigned_points_size);
-        std::vector<rerun::Color> points_colors(unassigned_points_size, rerun::Color(0, 0, 0));
+        std::vector<rerun::Color> points_colors(unassigned_points_size, rerun::Color(1, 1, 1));
         int i = 0;
         for (auto it = begin; it != end; it++) {
             auto point_with_normal = *(pwn_vector.begin() + *it);
@@ -734,11 +783,10 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             visual_points[i] = rerun::Position3D{p.x, p.y, p.z};
             i++;
         }
-        rec.log("unassigned_points",
+        rec.log("points/unassigned_points",
                 rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.1f}));
-
-
     }
+
     return true;
 }
 

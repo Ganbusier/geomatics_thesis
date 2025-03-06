@@ -133,8 +133,6 @@ class HoughTransform2D:
         self,
         points: List[Point],
         vote_threshold: int = 10,
-        tolerance: float = 0.1,
-        max_lines: int = 100,
         split_distance_threshold: float = 5.0,
     ) -> List[Line]:
         """
@@ -154,10 +152,11 @@ class HoughTransform2D:
         """
         detected_lines = []
         remaining_points = points.copy()
+        current_vote_threshold = np.floor(len(points) * 0.1)
 
-        while (
-            len(remaining_points) >= vote_threshold and len(detected_lines) < max_lines
-        ):
+        while current_vote_threshold >= vote_threshold:
+            print(f"Current vote threshold: {current_vote_threshold}, "
+                  f"Remaining indices: {len(remaining_points)}")
             # Calculate ρ range for remaining points
             xs = np.array([p.x for p in remaining_points])
             ys = np.array([p.y for p in remaining_points])
@@ -185,39 +184,62 @@ class HoughTransform2D:
                         votes[i][j].append(idx)
 
             max_vote = np.max(accumulator)
-            print(f"max vote: {max_vote}")
             if max_vote < vote_threshold:
                 break
 
-            i_max, j_max = np.unravel_index(np.argmax(accumulator), accumulator.shape)
-            # Get candidate line parameters
-            rho_val = rhos[i_max]
-            theta_val = self.thetas[j_max]
-            a = np.cos(theta_val)
-            b = np.sin(theta_val)
-            c = -rho_val
+            candidates = np.argwhere(accumulator >= current_vote_threshold)
+            sorted_candidates = sorted(candidates, key=lambda x: accumulator[x[0], x[1]], reverse=True)
 
-            # Get inliers from voting bin
-            inlier_indices = votes[i_max][j_max]
-            inlier_points = [remaining_points[idx] for idx in inlier_indices]
+            # 去重处理（合并相近参数候选）
+            unique_candidates = []
+            tolerance_rho = 5  # rho参数容差（单位：像素）
+            tolerance_theta = np.deg2rad(2)  # theta参数容差（单位：弧度）
 
-            # Build and refine line model
-            candidate_line = self._compute_line_model(inlier_points[0], inlier_points[-1])
-            self._refine_line_with_pca(candidate_line, inlier_points)
+            all_inlier_indices = []
+            for (i, j) in sorted_candidates:
+                rho_val = rhos[i]
+                theta_val = self.thetas[j]
+                # 检查是否与已选候选参数相近
+                is_unique = True
+                for (u_rho, u_theta) in unique_candidates:
+                    if (abs(rho_val - u_rho) < tolerance_rho 
+                        and abs(theta_val - u_theta) < tolerance_theta):
+                        is_unique = False
+                        break
+                if is_unique:
+                    unique_candidates.append((rho_val, theta_val))
 
-            # Prepare data for splitting
-            inlier_data = [(remaining_points[idx], idx) for idx in inlier_indices]
-            split_lines = self._split_line_if_needed(
-                candidate_line, inlier_data, distance_threshold=split_distance_threshold
-            )
-            for l in split_lines:
-                if len(l.inlier_indices) >= vote_threshold:
-                    detected_lines.append(l)
+            # 遍历所有唯一候选
+            for rho_val, theta_val in unique_candidates:
+                # 获取该候选的inlier索引
+                i = np.where(rhos == rho_val)[0][0]
+                j = np.where(self.thetas == theta_val)[0][0]
+                inlier_indices = votes[i][j]
 
-            # Remove processed inliers
-            remaining_points = [
-                p for idx, p in enumerate(remaining_points) if idx not in set(inlier_indices)
-            ]
+                # 跳过已处理的inliers（避免重复）
+                if len(inlier_indices) == 0:
+                    continue
+
+                # 后续处理（与原始代码一致）
+                inlier_points = [remaining_points[idx] for idx in inlier_indices]
+                candidate_line = self._compute_line_model(inlier_points[0], inlier_points[-1])
+                self._refine_line_with_pca(candidate_line, inlier_points)
+
+                # 拆分线段（若需要）
+                inlier_data = [(remaining_points[idx], idx) for idx in inlier_indices]
+                split_lines = self._split_line_if_needed(
+                    candidate_line, inlier_data, distance_threshold=split_distance_threshold
+                )
+
+                # 添加有效线段
+                for l in split_lines:
+                    if len(l.inlier_indices) >= vote_threshold:
+                        detected_lines.append(l)
+                        all_inlier_indices.extend(l.inlier_indices)
+
+            # 标记已处理的inliers
+            remaining_points = [p for idx, p in enumerate(remaining_points) if idx not in set(all_inlier_indices)]
+            current_vote_threshold = np.floor(current_vote_threshold * 0.8)
 
         print(f"Total detected lines: {len(detected_lines)}")
         detected_lines = sorted(detected_lines, key=lambda l: len(l.inlier_indices), reverse=True)

@@ -171,7 +171,7 @@ class Ransac_2d {
         std::iota(remaining_indices.begin(), remaining_indices.end(), 0);
         size_t inlier_thres = std::floor(points.size() * 0.1);
         size_t min_model_samples = 2;
-        if (inlier_thres < min_inliers) return lines;
+        if (inlier_thres <= min_inliers) return lines;
 
         while (inlier_thres >= min_inliers) {
             std::cout << " Remaining indices: " << remaining_indices.size();
@@ -181,14 +181,15 @@ class Ransac_2d {
             size_t iter = 0;
             while (iter < max_iterations && remaining_indices.size() >= inlier_thres) {
                 // sample two points randomly
-                std::vector<size_t> shuffled_indices = remaining_indices;
-                std::shuffle(shuffled_indices.begin(), shuffled_indices.end(), rng);
-                const Point& p1 = points[shuffled_indices[0]];
-                const Point& p2 = points[shuffled_indices[1]];
+                std::vector<size_t> sample_indices(2);
+                std::sample(remaining_indices.begin(), remaining_indices.end(),
+                            sample_indices.begin(), 2, rng);
+                const Point& p1 = points[sample_indices[0]];
+                const Point& p2 = points[sample_indices[1]];
 
                 // pass if points are overlapped or too far
                 if (std::hypot(p1.x - p2.x, p1.y - p2.y) < 1e-6) continue;
-                if (std::hypot(p1.x - p2.x, p1.y - p2.y) > 1.0) continue;
+                if (std::hypot(p1.x - p2.x, p1.y - p2.y) > 0.5) continue;
 
                 // compute candidate line
                 Line candidate_line = computeLineModel(p1, p2);
@@ -217,7 +218,7 @@ class Ransac_2d {
 
                 std::vector<size_t> valid_split_line_inliers;
                 for (const Line& l : split_lines) {
-                    if (l.inlier_indices.size() >= inlier_thres) {
+                    if (l.inlier_indices.size() >= min_inliers) {
                         candidate_lines.push_back(l);
                         for (auto& idx : l.inlier_indices) {
                             valid_split_line_inliers.push_back(idx);

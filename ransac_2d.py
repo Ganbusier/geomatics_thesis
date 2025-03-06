@@ -251,19 +251,22 @@ class Ransac2D:
         self,
         points: List[Point],
         max_iterations: int = 1000,
-        min_inliers: int = 500,
+        min_inliers: int = 5,
         tolerance: float = 0.1,
         split_distance_threshold: int = 5.0,
     ) -> List[Line]:
         lines = []
         remaining_indices = list(range(len(points)))
+        inlier_thres = int(np.floor(len(points) * 0.1))
+        if inlier_thres < min_inliers:
+            return lines
 
-        while min_inliers >= 5:
-            print(f"Remaining indices: {len(remaining_indices)}, current min inliers: {min_inliers}")
+        while inlier_thres >= min_inliers:
+            print(f"Remaining indices: {len(remaining_indices)}, current min inliers: {inlier_thres}")
             candidate_lines = []
 
             iter = 0
-            while iter < max_iterations and len(remaining_indices) >= min_inliers:
+            while iter < max_iterations and len(remaining_indices) >= inlier_thres:
                 # detect valid lines
                 idx1, idx2 = self.rng.sample(remaining_indices, k=2)
                 p1, p2 = points[idx1], points[idx2]
@@ -282,7 +285,7 @@ class Ransac2D:
                     if self._distance_to_line(points[idx], candidate_line) < tolerance
                 ]
                 candidate_line.inlier_indices = candidate_inliers
-                if len(candidate_inliers) < min_inliers:
+                if len(candidate_inliers) < inlier_thres:
                     iter += 1
                     continue
                 
@@ -294,7 +297,7 @@ class Ransac2D:
                 )
                 valid_split_line_indices = []
                 for l in split_lines:
-                    if len(l.inlier_indices) > min_inliers:
+                    if len(l.inlier_indices) > inlier_thres:
                         candidate_lines.append(l)
                         valid_split_line_indices.extend(l.inlier_indices)
 
@@ -305,7 +308,7 @@ class Ransac2D:
                 ]
 
             lines.extend(candidate_lines)
-            min_inliers = round(min_inliers * 0.9)
+            inlier_thres = round(inlier_thres * 0.9)
             
 
         print(len(lines))
