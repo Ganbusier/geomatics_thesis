@@ -1,19 +1,21 @@
+#include <CGAL/Bbox_3.h>
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 #include <CGAL/IO/read_points.h>
+#include <CGAL/OSQP_quadratic_program_traits.h>
 #include <CGAL/Point_set_3.h>
 #include <CGAL/Point_with_normal_3.h>
 #include <CGAL/Shape_detection/Efficient_RANSAC.h>
 #include <CGAL/Shape_detection/Region_growing/Point_set.h>
 #include <CGAL/Shape_detection/Region_growing/Region_growing.h>
-#include <CGAL/OSQP_quadratic_program_traits.h>
 #include <CGAL/Shape_regularization/regularize_segments.h>
 #include <CGAL/property_map.h>
-#include <CGAL/Bbox_3.h>
 #include <easy3d/algo/point_cloud_normals.h>
 #include <easy3d/algo/point_cloud_ransac.h>
+#include <easy3d/core/graph.h>
 #include <easy3d/core/model.h>
 #include <easy3d/core/point_cloud.h>
 #include <easy3d/fileio/point_cloud_io.h>
+#include <easy3d/kdtree/kdtree_search_eth.h>
 #include <easy3d/renderer/drawable_lines.h>
 #include <easy3d/renderer/drawable_points.h>
 #include <easy3d/renderer/renderer.h>
@@ -26,7 +28,9 @@
 #include <rerun.hpp>
 #include <rerun/demo_utils.hpp>
 
+#include "custom_3d_regularization.h"
 #include "ransac_2d.h"
+#include "spherical_kMeans.h"
 
 // Typedefs for CGAL RANSAC
 using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
@@ -36,7 +40,8 @@ using Pwn_vector = std::vector<Point_with_normal>;
 using Point_map = CGAL::First_of_pair_property_map<Point_with_normal>;
 using Normal_map = CGAL::Second_of_pair_property_map<Point_with_normal>;
 
-using Traits = CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, Pwn_vector, Point_map, Normal_map>;
+using Traits =
+    CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, Pwn_vector, Point_map, Normal_map>;
 using Efficient_ransac = CGAL::Shape_detection::Efficient_RANSAC<Traits>;
 using Cylinder = CGAL::Shape_detection::Cylinder<Traits>;
 using Plane = CGAL::Shape_detection::Plane<Traits>;
@@ -57,10 +62,12 @@ using Normal_map_rg = typename Point_set::Vector_map;
 using Neighbor_query = CGAL::Shape_detection::Point_set::K_neighbor_query_for_point_set<Point_set>;
 using Cylinder_Region_type =
     CGAL::Shape_detection::Point_set::Least_squares_cylinder_fit_region_for_point_set<Point_set>;
-using Plane_Region_type = 
+using Plane_Region_type =
     CGAL::Shape_detection::Point_set::Least_squares_plane_fit_region_for_point_set<Point_set>;
-using Cylinder_Region_growing = CGAL::Shape_detection::Region_growing<Neighbor_query, Cylinder_Region_type>;
-using Plane_Region_growing = CGAL::Shape_detection::Region_growing<Neighbor_query, Plane_Region_type>;
+using Cylinder_Region_growing =
+    CGAL::Shape_detection::Region_growing<Neighbor_query, Cylinder_Region_type>;
+using Plane_Region_growing =
+    CGAL::Shape_detection::Region_growing<Neighbor_query, Plane_Region_type>;
 
 // Typedefs for CGAL Shape Regularization
 using Segment_2 = Kernel::Segment_2;
@@ -68,20 +75,19 @@ using Segments = std::vector<Segment_2>;
 using Indices = std::vector<std::size_t>;
 using Segment_map = CGAL::Identity_property_map<Segment_2>;
 using SR_neighbor_query =
-  CGAL::Shape_regularization::Segments::Delaunay_neighbor_query_2<Kernel, Segments, Segment_map>;
+    CGAL::Shape_regularization::Segments::Delaunay_neighbor_query_2<Kernel, Segments, Segment_map>;
 using Angle_regularization =
-  CGAL::Shape_regularization::Segments::Angle_regularization_2<Kernel, Segments, Segment_map>;
+    CGAL::Shape_regularization::Segments::Angle_regularization_2<Kernel, Segments, Segment_map>;
 using Offset_regularization =
-  CGAL::Shape_regularization::Segments::Offset_regularization_2<Kernel, Segments, Segment_map>;
-using Quadratic_program =
-  CGAL::OSQP_quadratic_program_traits<FT>;
+    CGAL::Shape_regularization::Segments::Offset_regularization_2<Kernel, Segments, Segment_map>;
+using Quadratic_program = CGAL::OSQP_quadratic_program_traits<FT>;
 
 using Quadratic_angle_regularizer =
-  CGAL::Shape_regularization::QP_regularization<
-    Kernel, Segments, SR_neighbor_query, Angle_regularization, Quadratic_program>;
+    CGAL::Shape_regularization::QP_regularization<Kernel, Segments, SR_neighbor_query,
+                                                  Angle_regularization, Quadratic_program>;
 using Quadratic_offset_regularizer =
-  CGAL::Shape_regularization::QP_regularization<
-    Kernel, Segments, SR_neighbor_query, Offset_regularization, Quadratic_program>;
+    CGAL::Shape_regularization::QP_regularization<Kernel, Segments, SR_neighbor_query,
+                                                  Offset_regularization, Quadratic_program>;
 
 using namespace easy3d;
 using namespace rerun::demo;
@@ -92,6 +98,7 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model);
 bool estimate_normals(Viewer* viewer, Model* model);
 bool offset_xyz(Viewer* viewer, Model* model);
 bool run_cgal_region_growing(Viewer* viewer, Model* model);
+bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model);
 Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vector_3& d);
 
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
@@ -120,11 +127,10 @@ int main(int argc, char** argv) {
     // usage
     viewer.set_usage(
         "'Ctrl + n': estimate normals\n"
-        "'Ctrl + e': run CGAL RANSAC\n"
+        "'Ctrl + e': run Easy3D KdTree-Graph Approach\n"
         "'Shift + e': run CGAL RANSAC Plane");
     viewer.bind(run_cgal_ransac_plane, model, Viewer::KEY_E, Viewer::MODIF_SHIFT);
-    viewer.bind(run_cgal_ransac, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
-    viewer.bind(run_cgal_region_growing, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
+    viewer.bind(run_easy3d_kdTree_graph_approach, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
     viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
 
     // fit screen
@@ -529,30 +535,23 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
     int num_planes = planes.size();
     LOG(INFO) << "Detected " << num_planes << " planes, " << ransac.number_of_unassigned_points()
               << " unassigned points.";
-    
+
     // get indices of all unassigned points
     const auto& unassigned_iter = ransac.indices_of_unassigned_points();
-    std::vector<size_t> indices_of_all_unassigned_points(
-        unassigned_iter.begin(),
-        unassigned_iter.end()
-    );
+    std::vector<size_t> indices_of_all_unassigned_points(unassigned_iter.begin(),
+                                                         unassigned_iter.end());
 
     // get indices of all assigned points
     std::vector<size_t> indices_of_all_assigned_points(pwn_vector.size());
     std::iota(indices_of_all_assigned_points.begin(), indices_of_all_assigned_points.end(), 0);
     indices_of_all_assigned_points.erase(
-        std::remove_if(
-            indices_of_all_assigned_points.begin(),
-            indices_of_all_assigned_points.end(),
-            [&](size_t idx) {
-                return std::find(
-                    indices_of_all_unassigned_points.begin(), 
-                    indices_of_all_unassigned_points.end(), 
-                    idx) != indices_of_all_unassigned_points.end();
-            }
-        ),
-        indices_of_all_assigned_points.end()
-    );
+        std::remove_if(indices_of_all_assigned_points.begin(), indices_of_all_assigned_points.end(),
+                       [&](size_t idx) {
+                           return std::find(indices_of_all_unassigned_points.begin(),
+                                            indices_of_all_unassigned_points.end(),
+                                            idx) != indices_of_all_unassigned_points.end();
+                       }),
+        indices_of_all_assigned_points.end());
 
     if (num_planes > 0) {
         // build new point cloud
@@ -595,7 +594,8 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
                 auto& p = pwn_vector[i].first;
                 assigned_points.push_back(p);
             }
-            auto assigned_points_bbox = CGAL::bbox_3(assigned_points.begin(), assigned_points.end());
+            auto assigned_points_bbox =
+                CGAL::bbox_3(assigned_points.begin(), assigned_points.end());
             auto zmin = assigned_points_bbox.zmin();
             auto zmax = assigned_points_bbox.zmax();
             LOG(INFO) << plane->info();
@@ -611,7 +611,7 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             std::vector<std::size_t> indices;
             for (size_t i = 0; i < pwn_vector.size(); i++) {
                 auto& p = pwn_vector[i].first;
-                if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 25) {
+                if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 100.0) {
                     indices.push_back(i);
                 }
             }
@@ -636,7 +636,8 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
                 point_2d.x = p_2d.x();
                 point_2d.y = p_2d.y();
                 points_2d[i] = point_2d;
-                points2d[i] = rerun::Position2D{static_cast<float>(point_2d.x), static_cast<float>(point_2d.y)};
+                points2d[i] = rerun::Position2D{static_cast<float>(point_2d.x),
+                                                static_cast<float>(point_2d.y)};
                 i++;
             }
 
@@ -644,12 +645,12 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             size_t max_iterations = 200;
             size_t min_inliers = 4;
             double tolerance = 0.1;
-            double split_distance_thres = 1.0;
+            double split_distance_thres = 9999;
 
             // perform 2D RANSAC
             Ransac_2d ransac2D;
-            std::vector<Ransac_2d::Line> lines =
-                ransac2D.detect(points_2d, max_iterations, min_inliers, tolerance, split_distance_thres);
+            std::vector<Ransac_2d::Line> lines = ransac2D.detect(
+                points_2d, max_iterations, min_inliers, tolerance, split_distance_thres);
             LOG(INFO) << "Plane" << plane_index << ": detect " << lines.size() << " lines.";
             if (lines.size() == 0) {
                 plane_index++;
@@ -661,7 +662,7 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             const FT max_angle_2 = FT(5);
             const FT max_offset_2 = FT(0.5);
 
-            for (const auto& line: lines) {
+            for (const auto& line : lines) {
                 Kernel::Point_2 p1(line.start.x, line.start.y);
                 Kernel::Point_2 p2(line.end.x, line.end.y);
                 Segment_2 seg = Segment_2(p1, p2);
@@ -671,18 +672,12 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             // create QP solver, neighbor query and angle-based regularization model
             Quadratic_program qp_angles;
             SR_neighbor_query sr_neighbor_query(segments2D);
-            Angle_regularization angle_regularization(
-                segments2D,
-                CGAL::parameters::maximum_angle(max_angle_2)
-            );
-            
+            Angle_regularization angle_regularization(segments2D,
+                                                      CGAL::parameters::maximum_angle(max_angle_2));
+
             // regularize
-            Quadratic_angle_regularizer qp_angle_regularizer(
-                segments2D,
-                sr_neighbor_query,
-                angle_regularization,
-                qp_angles
-            );
+            Quadratic_angle_regularizer qp_angle_regularizer(segments2D, sr_neighbor_query,
+                                                             angle_regularization, qp_angles);
             qp_angle_regularizer.regularize();
 
             // offset regularization
@@ -693,9 +688,7 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             // create qp solver and offset-based regularization model
             Quadratic_program qp_offsets;
             Offset_regularization offset_regularization(
-                segments2D,
-                CGAL::parameters::maximum_offset(max_offset_2)
-            );
+                segments2D, CGAL::parameters::maximum_offset(max_offset_2));
 
             // add each group of parallel segments with at least 2 segments
             sr_neighbor_query.clear();
@@ -705,12 +698,8 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             }
 
             // regularize
-            Quadratic_offset_regularizer qp_offset_regularizer(
-                segments2D,
-                sr_neighbor_query,
-                offset_regularization,
-                qp_offsets
-            );
+            Quadratic_offset_regularizer qp_offset_regularizer(segments2D, sr_neighbor_query,
+                                                               offset_regularization, qp_offsets);
             qp_offset_regularizer.regularize();
 
             // convert 2d segments back to 3d
@@ -723,35 +712,36 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
                 auto end = plane->to_3d(end_2d);
                 rerun::Collection<rerun::Vec2D> strip2d = {
                     {static_cast<float>(start_2d.x()), static_cast<float>(start_2d.y())},
-                    {static_cast<float>(end_2d.x()), static_cast<float>(end_2d.y())}
-                }; 
+                    {static_cast<float>(end_2d.x()), static_cast<float>(end_2d.y())}};
                 rerun::Collection<rerun::Vec3D> strip3d = {
-                    {static_cast<float>(start.x()), static_cast<float>(start.y()), static_cast<float>(start.z())},
-                    {static_cast<float>(end.x()), static_cast<float>(end.y()), static_cast<float>(end.z())}
-                };
-                sr_strips2d.push_back(strip2d); 
-                sr_strips3d.push_back(strip3d); 
+                    {static_cast<float>(start.x()), static_cast<float>(start.y()),
+                     static_cast<float>(start.z())},
+                    {static_cast<float>(end.x()), static_cast<float>(end.y()),
+                     static_cast<float>(end.z())}};
+                sr_strips2d.push_back(strip2d);
+                sr_strips3d.push_back(strip3d);
             }
-            
+
             // construct 3D lines from 2D lines
             std::vector<rerun::Collection<rerun::Vec3D>> strips;
             std::vector<rerun::Collection<rerun::Vec2D>> strips2d;
             for (size_t line_idx = 0; line_idx < lines.size(); ++line_idx) {
                 Ransac_2d::Line line = lines[line_idx];
-                LOG(INFO) << "line " << line_idx << ": " << line.a << "x + " << line.b << "y + " << line.c << " = 0";
-                
+                LOG(INFO) << "line " << line_idx << ": " << line.a << "x + " << line.b << "y + "
+                          << line.c << " = 0";
+
                 auto start_2d = Kernel::Point_2(line.start.x, line.start.y);
                 auto end_2d = Kernel::Point_2(line.end.x, line.end.y);
                 rerun::Collection<rerun::Vec2D> strip2d = {
                     {static_cast<float>(start_2d.x()), static_cast<float>(start_2d.y())},
-                    {static_cast<float>(end_2d.x()), static_cast<float>(end_2d.y())}
-                };
+                    {static_cast<float>(end_2d.x()), static_cast<float>(end_2d.y())}};
                 auto start = plane->to_3d(start_2d);
                 auto end = plane->to_3d(end_2d);
                 rerun::Collection<rerun::Vec3D> strip = {
-                    {static_cast<float>(start.x()), static_cast<float>(start.y()), static_cast<float>(start.z())},
-                    {static_cast<float>(end.x()), static_cast<float>(end.y()), static_cast<float>(end.z())}
-                };
+                    {static_cast<float>(start.x()), static_cast<float>(start.y()),
+                     static_cast<float>(start.z())},
+                    {static_cast<float>(end.x()), static_cast<float>(end.y()),
+                     static_cast<float>(end.z())}};
                 strips.push_back(strip);
                 strips2d.push_back(strip2d);
             }
@@ -759,10 +749,13 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             // log points and lines to rerun
             rec.log("points/points" + std::to_string(plane_index),
                     rerun::Points3D(points3d).with_colors(points_colors).with_radii({0.1f}));
-            rec.log("segments/segments" + std::to_string(plane_index), rerun::LineStrips3D(strips).with_radii({0.1f}));
-            // rec.log("segments_R" + std::to_string(plane_index), rerun::LineStrips3D(sr_strips3d).with_radii({0.1f}));
+            rec.log("segments/segments" + std::to_string(plane_index),
+                    rerun::LineStrips3D(strips).with_radii({0.1f}));
+            // rec.log("segments_R" + std::to_string(plane_index),
+            // rerun::LineStrips3D(sr_strips3d).with_radii({0.1f}));
 
-            rec.log("2D_points", rerun::Points2D(points2d).with_colors(points_colors).with_radii({0.1f}));
+            rec.log("2D_points",
+                    rerun::Points2D(points2d).with_colors(points_colors).with_radii({0.1f}));
             rec.log("2D_segments", rerun::LineStrips2D(strips2d).with_radii({0.1f}));
             rec.log("2D_segments_R", rerun::LineStrips2D(sr_strips2d).with_radii({0.1f}));
 
@@ -979,4 +972,165 @@ Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vec
     Vector_3 projection = (diff * d) / d.squared_length() * d;
     Point_3 moved_p1 = p1 + projection;
     return moved_p1;
+}
+
+bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    // create rerun logger
+    const auto rr = rerun::RecordingStream("kdTree Approach logger");
+    rr.spawn().exit_on_failure();
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    // construct kdtree for the point cloud and set search radius
+    auto tree = KdTreeSearch_ETH(cloud);
+    float search_radius = 3.0;
+    float squared_search_radius = search_radius * search_radius;
+
+    // perform kdTree approach on each point
+    size_t iter = 0;
+    for (const auto& v : cloud->vertices()) {
+        if (iter >= 1500) break;
+        vec3 p = points[v];
+
+        // perform kdTree search to find neighbors
+        std::vector<int> neighbors_indices;
+        std::vector<float> neighbors_squared_distances;
+        int k = 16;
+        // tree.find_points_in_range(p, squared_search_radius, neighbors_indices,
+        //                           neighbors_squared_distances);
+        tree.find_closest_k_points(p, k, neighbors_indices, neighbors_squared_distances);
+
+        // construct graph from p and its neighbors
+        easy3d::Graph* graph = new Graph;
+        Graph::Vertex v0 = graph->add_vertex(p);
+        // add each neighor into the graph and construct edge [p, neighor_i]
+        for (const auto& i : neighbors_indices) {
+            PointCloud::Vertex v(i);
+            vec3 pi = points[v];
+            Graph::Vertex vi = graph->add_vertex(pi);
+            graph->add_edge(v0, vi);
+        }
+
+        // perform spherical kMeans to regularize lines
+        std::vector<int> bestLabels;
+        std::vector<vec3> bestCenters;
+        float bestInertia;
+
+        std::vector<vec3> directions;
+        for (const auto& e : graph->edges()) {
+            vec3 source = graph->position(graph->source(e));
+            vec3 target = graph->position(graph->target(e));
+            vec3 direction = target - source;
+            directions.push_back(direction.normalize());
+        }
+
+        int optimalK =
+            chooseOptimalK(directions, 1, 4, 100, 0.1, bestLabels, bestCenters, bestInertia);
+
+        // remove redundent segments
+        // group edges based on labels into clusters
+        std::vector<std::vector<Graph::Edge>> clusterEdges(optimalK);
+        int edgeIndex = 0;
+        for (const auto& e : graph->edges()) {
+            int label = bestLabels[edgeIndex];
+            clusterEdges[label].push_back(e);
+            ++edgeIndex;
+        }
+
+        // for each cluster, only preserve the edge which is the most cosine-similar to the cluster
+        // center
+        std::vector<Graph::Edge> keptEdges;
+        for (int c = 0; c < optimalK; c++) {
+            float bestSim = -std::numeric_limits<float>::max();
+            Graph::Edge bestEdge;
+            bool found = false;
+            for (const auto& edge : clusterEdges[c]) {
+                vec3 source = graph->position(graph->source(edge));
+                vec3 target = graph->position(graph->target(edge));
+                vec3 dir = (target - source).normalize();
+                float sim = cosine_similarity(dir, bestCenters[c]);
+                if (sim > bestSim) {
+                    bestSim = sim;
+                    bestEdge = edge;
+                    found = true;
+                }
+            }
+            if (found) {
+                keptEdges.push_back(bestEdge);
+            }
+        }
+
+        // apply custom 3d QP regularizaion
+        // trasnsfrom easy3d graph edges into CGAL segments
+        std::vector<custom_3d::Segment_3> segments;
+        for (const auto e : graph->edges()) {
+            vec3 source = graph->position(graph->source(e));
+            vec3 target = graph->position(graph->target(e));
+            custom_3d::Point_3 s(source.x, source.y, source.z);
+            custom_3d::Point_3 t(target.x, target.y, target.z);
+            custom_3d::Segment_3 seg(s, t);
+            segments.push_back(seg);
+        }
+        // execute 3d QP regularization (angle, then offset)
+        custom_3d::Combined_regularization_3::Parameters params(25, 0.5, 5.0, 0.5);
+        custom_3d::Combined_regularization_3::regularize(segments, params);
+
+        // log QP regularized segments to the logger
+        std::vector<rerun::Collection<rerun::Vec3D>> qp_strips3d;
+        for (const auto& seg : segments) {
+            auto s = seg.source;
+            auto t = seg.target;
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(s.x()), static_cast<float>(s.y()),
+                 static_cast<float>(s.z())},
+                {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}};
+            qp_strips3d.push_back(strip);
+        }
+        rr.log("QP_segments/segments" + std::to_string(iter), rerun::LineStrips3D(qp_strips3d).with_radii(0.01f));
+
+        // log the point cloud to the logger
+        std::vector<rerun::Position3D> rr_point_cloud;
+        for (const auto& v : cloud->vertices()) {
+            vec3 p = points[v];
+            rr_point_cloud.push_back(rerun::Position3D{p.x, p.y, p.z});
+        }
+        rr.log("points", rerun::Points3D(rr_point_cloud).with_radii({0.05f}));
+
+        // log all lines of the graph to the logger
+        std::vector<rerun::Collection<rerun::Vec3D>> strips3d;
+        for (const auto& e : graph->edges()) {
+            auto source = graph->source(e);
+            auto target = graph->target(e);
+            auto start = graph->position(source);
+            auto end = graph->position(target);
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(start.x), static_cast<float>(start.y),
+                 static_cast<float>(start.z)},
+                {static_cast<float>(end.x), static_cast<float>(end.y), static_cast<float>(end.z)}};
+            strips3d.push_back(strip);
+        }
+        rr.log("segments/segments" + std::to_string(iter),
+               rerun::LineStrips3D(strips3d).with_radii({0.01f}));
+
+        // log regularized segments to rerun
+        std::vector<rerun::Collection<rerun::Vec3D>> strips3d_regulairzed;
+        for (const auto& edge : keptEdges) {
+            auto source = graph->source(edge);
+            auto target = graph->target(edge);
+            auto start = graph->position(source);
+            auto end = graph->position(target);
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(start.x), static_cast<float>(start.y),
+                 static_cast<float>(start.z)},
+                {static_cast<float>(end.x), static_cast<float>(end.y), static_cast<float>(end.z)}};
+            strips3d_regulairzed.push_back(strip);
+        }
+        rr.log("segments_regularized/segments" + std::to_string(iter),
+               rerun::LineStrips3D(strips3d_regulairzed).with_radii({0.01f}));
+        iter++;
+    }
+
+    return true;
 }

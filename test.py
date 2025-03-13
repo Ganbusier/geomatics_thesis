@@ -133,4 +133,4 @@ if __name__ == "__main__":
     input_pylon = "./resources/2024_C_44HZ1_14_pylon.ply"
     input_line = "./resources/2024_C_44HZ1_14_line.ply"
 
-    main(input_pylon, detect_mode=0)
+    main(input_pylon, detect_mode=1)

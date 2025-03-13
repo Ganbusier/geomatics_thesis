@@ -167,13 +167,14 @@ class Ransac_2d {
                              size_t min_inliers = 5, double tolerance = 0.1,
                              double split_distance_thres = 1.0) {
         std::vector<Line> lines;
-        std::vector<size_t> remaining_indices(points.size());
-        std::iota(remaining_indices.begin(), remaining_indices.end(), 0);
+        std::vector<size_t> all_remaining_indices(points.size());
+        std::iota(all_remaining_indices.begin(), all_remaining_indices.end(), 0);
         size_t inlier_thres = std::floor(points.size() * 0.1);
         size_t min_model_samples = 2;
         if (inlier_thres <= min_inliers) return lines;
 
         while (inlier_thres >= min_inliers) {
+            std::vector<size_t> remaining_indices = all_remaining_indices;
             std::cout << " Remaining indices: " << remaining_indices.size();
             std::cout << " Current inliers threshold: " << inlier_thres << std::endl;
             std::vector<Line> candidate_lines;
