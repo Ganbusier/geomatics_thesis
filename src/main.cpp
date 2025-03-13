@@ -1029,7 +1029,6 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
         int optimalK =
             chooseOptimalK(directions, 1, 4, 100, 0.1, bestLabels, bestCenters, bestInertia);
 
-        // remove redundent segments
         // group edges based on labels into clusters
         std::vector<std::vector<Graph::Edge>> clusterEdges(optimalK);
         int edgeIndex = 0;
@@ -1039,26 +1038,39 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
             ++edgeIndex;
         }
 
-        // for each cluster, only preserve the edge which is the most cosine-similar to the cluster
-        // center
+        // for each cluster, select and adjust the representative edge
         std::vector<Graph::Edge> keptEdges;
         for (int c = 0; c < optimalK; c++) {
-            float bestSim = -std::numeric_limits<float>::max();
-            Graph::Edge bestEdge;
+            // find the longest edge in the cluster
+            float maxLength = -std::numeric_limits<float>::max();
+            Graph::Edge longestEdge;
             bool found = false;
+            
             for (const auto& edge : clusterEdges[c]) {
                 vec3 source = graph->position(graph->source(edge));
                 vec3 target = graph->position(graph->target(edge));
-                vec3 dir = (target - source).normalize();
-                float sim = cosine_similarity(dir, bestCenters[c]);
-                if (sim > bestSim) {
-                    bestSim = sim;
-                    bestEdge = edge;
+                float length = (target - source).length();
+                
+                if (length > maxLength) {
+                    maxLength = length;
+                    longestEdge = edge;
                     found = true;
                 }
             }
+            
             if (found) {
-                keptEdges.push_back(bestEdge);
+                // use the longest edge but adjust its direction to the cluster's main direction
+                vec3 source = graph->position(graph->source(longestEdge));
+                vec3 target = graph->position(graph->target(longestEdge));
+                float length = (target - source).length();
+                
+                // use bestCenters[c] as direction while maintaining edge length
+                vec3 newDirection = vec3(bestCenters[c].x, bestCenters[c].y, bestCenters[c].z);
+                vec3 newTarget = source + newDirection * length;
+                
+                // update the edge endpoint
+                graph->position(graph->target(longestEdge)) = newTarget;
+                keptEdges.push_back(longestEdge);
             }
         }
 
@@ -1074,7 +1086,7 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
             segments.push_back(seg);
         }
         // execute 3d QP regularization (angle, then offset)
-        custom_3d::Combined_regularization_3::Parameters params(25, 0.5, 5.0, 0.5);
+        custom_3d::Combined_regularization_3::Parameters params(45, 0.5, 5.0, 0.5);
         custom_3d::Combined_regularization_3::regularize(segments, params);
 
         // log QP regularized segments to the logger
