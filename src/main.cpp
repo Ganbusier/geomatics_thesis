@@ -18,7 +18,7 @@
 #include <rerun/demo_utils.hpp>
 
 #include "custom_3d_regularization.h"
-#include "spherical_kMeans.h"
+#include "custom_ransac.h"
 
 using namespace easy3d;
 using namespace rerun::demo;
@@ -27,6 +27,7 @@ std::vector<Drawable*> drawables;  // store drawables added to the viewer
 
 // function declarations
 bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model);
+bool run_custom_ransac(Viewer* viewer, Model* model);
 bool offset_xyz(Viewer* viewer, Model* model);
 Graph* build_knn_graph(PointCloud* cloud, int k);
 Graph* build_delaunay_graph(PointCloud* cloud);
@@ -54,10 +55,13 @@ int main(int argc, char** argv) {
     drawable->set_point_size(3.0f);
 
     // set usage instructions
-    viewer.set_usage("'Ctrl + k': run kdTree graph approach\n");
+    viewer.set_usage(
+        "'Ctrl + k': run kdTree graph approach\n"
+        "'Ctrl + r': run 3D-2D RANSAC detection");
 
-    // bind function to key
+    // bind functions to keys
     viewer.bind(run_easy3d_kdTree_graph_approach, model, Viewer::KEY_K, Viewer::MODIF_CTRL);
+    viewer.bind(run_custom_ransac, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
 
     // fit screen
     viewer.fit_screen();
@@ -92,6 +96,141 @@ bool offset_xyz(Viewer* viewer, Model* model) {
 
     LOG(INFO) << "Offset point 0:" << points[PointCloud::Vertex(0)];
     cloud->add_vertex_property<vec3>("v:offset_vector", vec3(min_x, min_y, min_z));
+    return true;
+}
+
+bool run_custom_ransac(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    // create rerun logger
+    const auto rr = rerun::RecordingStream("3D-2D RANSAC logger");
+    rr.spawn().exit_on_failure();
+
+    // convert model to point cloud
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    if (!cloud) {
+        LOG(ERROR) << "Model is not a point cloud";
+        return false;
+    }
+
+    // get points and normals
+    auto points_prop = cloud->get_vertex_property<vec3>("v:point");
+    auto normals_prop = cloud->get_vertex_property<vec3>("v:normal");
+
+    // check normals, if not exist, estimate
+    if (!normals_prop) {
+        LOG(INFO) << "Point cloud does not have normals. Estimating...";
+        int k_neighbors = 16;
+        if (!PointCloudNormals::estimate(cloud, k_neighbors)) {
+            LOG(ERROR) << "Failed to estimate normals";
+            return false;
+        }
+        normals_prop = cloud->get_vertex_property<vec3>("v:normal");
+    }
+
+    // convert points and normals to CGAL format
+    std::vector<custom_ransac::Point_3> cgal_points;
+    std::vector<custom_ransac::Vector_3> cgal_normals;
+
+    for (auto v : cloud->vertices()) {
+        const vec3& p = points_prop[v];
+        const vec3& n = normals_prop[v];
+        cgal_points.emplace_back(p.x, p.y, p.z);
+        cgal_normals.emplace_back(n.x, n.y, n.z);
+    }
+
+    // set 3D RANSAC parameters
+    custom_ransac::Ransac_3d::Parameters plane_params;
+    plane_params.probability = 0.01;      // probability of missing the largest plane
+    plane_params.min_points = 4;          // minimum number of points
+    plane_params.epsilon = 0.1;           // maximum distance
+    plane_params.normal_threshold = 0.0;  // normal angle threshold
+    plane_params.cluster_epsilon = 0.5;   // cluster threshold
+
+    // execute 3D plane detection
+    auto planes = custom_ransac::Ransac_3d::detect_planes(cgal_points, cgal_normals, plane_params);
+    LOG(INFO) << "Detected " << planes.size() << " planes";
+
+    // record the number of detected planes
+    int plane_count = 0;
+    // store all detected 3D segments
+    std::vector<std::pair<custom_ransac::Point_3, custom_ransac::Point_3>> all_3d_segments;
+
+    // execute 2D RANSAC for each plane
+    for (const auto& plane_result : planes) {
+        // log 3D inliers of each plane to rerun
+        std::vector<rerun::Position3D> rr_inliers;
+        for (const auto& pwn : plane_result.points_with_normals) {
+            auto p = pwn.first;
+            rr_inliers.push_back(rerun::Position3D{
+                static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())});
+        }
+        rr.log("3D RANSAC/plane_" + std::to_string(plane_count) + "_inliers",
+               rerun::Points3D(rr_inliers).with_radii({0.1f}));
+
+        // project 3D points to 2D plane
+        double distance_threshold = 100.0;  // projection distance threshold
+        auto projected =
+            custom_ransac::Ransac_3d::project_points_to_plane(cgal_points, plane_result, distance_threshold);
+
+        // log 2D projected points to rerun
+        std::vector<rerun::Position2D> rr_projected_points;
+        for (const auto& p : projected.points_2d) {
+            rr_projected_points.push_back(
+                rerun::Position2D{static_cast<float>(p.x), static_cast<float>(p.y)});
+        }
+        rr.log("2D projection/plane_projected_points",
+               rerun::Points2D(rr_projected_points).with_radii({0.1f}));
+
+        // set 2D RANSAC parameters
+        custom_ransac::Ransac_2d ransac_2d;
+        custom_ransac::Ransac_2d::Parameters line_params;
+        line_params.max_iterations = 1000;  // maximum number of iterations
+        line_params.min_inliers = 4;        // minimum number of inliers
+        line_params.tolerance = 0.05;       // maximum distance
+        line_params.min_length = 0.1;       // minimum length
+        line_params.split_threshold = 2.0;  // split threshold
+
+        // execute 2D line detection
+        auto lines_2d = ransac_2d.detect(projected.points_2d, line_params);
+        LOG(INFO) << "Plane " << plane_count << ": detected " << lines_2d.size()
+                  << " line segments";
+        
+        // log 2D line segments to rerun
+        std::vector<rerun::Collection<rerun::Vec2D>> rr_line_segments;
+        for (const auto& line : lines_2d) {
+            rr_line_segments.push_back(rerun::Collection<rerun::Vec2D>{
+                rerun::Vec2D{static_cast<float>(line.start.x), static_cast<float>(line.start.y)},
+                rerun::Vec2D{static_cast<float>(line.end.x), static_cast<float>(line.end.y)}});
+        }
+        rr.log("2D projection/plane_line_segments", rerun::LineStrips2D(rr_line_segments));
+
+        // convert 2D segments to 3D and record
+        std::vector<rerun::Collection<rerun::Vec3D>> line_segments_3d;
+        for (const auto& line : lines_2d) {
+            auto segment_3d = custom_ransac::Ransac_3d::convert_line_2d_to_3d(line, projected);
+
+            // record segments to global list
+            all_3d_segments.push_back(segment_3d);
+
+            // create Rerun line segments
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(segment_3d.first.x()), static_cast<float>(segment_3d.first.y()),
+                 static_cast<float>(segment_3d.first.z())},
+                {static_cast<float>(segment_3d.second.x()),
+                 static_cast<float>(segment_3d.second.y()),
+                 static_cast<float>(segment_3d.second.z())}};
+            line_segments_3d.push_back(strip);
+        }
+
+        // record 3D segments to Rerun
+        rr.log("2D RANSAC/plane" + std::to_string(plane_count) + "_segments",
+               rerun::LineStrips3D(line_segments_3d).with_radii({0.05f}));
+
+        plane_count++;
+    }
+
+    LOG(INFO) << "3D-2D RANSAC completed. Total segments detected: " << all_3d_segments.size();
     return true;
 }
 
@@ -300,10 +439,11 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
     }
 
     // execute global 3D QP regularization
-    // custom_3d::Combined_regularization_3::Parameters params(60, 0.5, 15.0, 0.5);
+    // parameters: max angle deviation, max offset, parallel angle threshold, merge threshold
+    // custom_3d::Combined_regularization_3::Parameters params(45, 0.2, 10.0, 0.1);
     // custom_3d::Combined_regularization_3::regularize(segments, params);
     // custom_3d::Angle_regularization_3::regularize_with_batches(segments, 45);
-    custom_3d::Offset_regularization_3::regularize_with_batches(segments, 0.1);
+    custom_3d::Offset_regularization_3::regularize_with_batches(segments, 0.3, 0.3, 25);
 
     // log regularized segments
     std::vector<rerun::Collection<rerun::Vec3D>> qp_strips3d;
