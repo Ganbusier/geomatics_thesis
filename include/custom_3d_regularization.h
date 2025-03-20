@@ -67,10 +67,11 @@ struct Segment_3 {
 // batch processor for 3D QP regularization
 class Batch_processor_3 {
    public:
-    static constexpr size_t MAX_BATCH_SIZE = 100;
+    static constexpr size_t MAX_BATCH_SIZE = 5000;
 
     template <typename RegularizationFunc>
-    static void process_in_batches(Segments& segments, RegularizationFunc regularize_func) {
+    static void process_in_batches(Segments& segments, RegularizationFunc regularize_func,
+                                   std::vector<int>* batch_indices = nullptr) {
         LOG(INFO) << "Start batch processing: total segments = " << segments.size()
                   << ", batch size = " << MAX_BATCH_SIZE;
 
@@ -108,7 +109,7 @@ class Batch_processor_3 {
         }
 
         // calculate grid size
-        FT grid_size = std::max({max_x - min_x, max_y - min_y, max_z - min_z}) /
+        FT grid_size = std::min({max_x - min_x, max_y - min_y, max_z - min_z}) /
                        std::cbrt(static_cast<FT>(segments.size() / MAX_BATCH_SIZE));
 
         LOG(INFO) << "Spatial grid size = " << grid_size;
@@ -125,12 +126,14 @@ class Batch_processor_3 {
 
         LOG(INFO) << "Number of grid cells = " << grid_cells.size();
 
-        // calculate total number of batches
-        size_t total_batches = 0;
-        for (const auto& cell : grid_cells) {
-            const auto& cell_segments = cell.second;
-            total_batches += (cell_segments.size() + MAX_BATCH_SIZE - 1) / MAX_BATCH_SIZE;
+        // group cells by z value
+        std::map<int, std::vector<std::tuple<int, int, int>>> z_grouped_cells;
+        for (const auto& cell_entry : grid_cells) {
+            const auto& [x, y, z] = cell_entry.first;
+            z_grouped_cells[z].push_back(std::make_tuple(x, y, z));
         }
+        
+        LOG(INFO) << "Grouping grid cells by Z value: " << z_grouped_cells.size() << " different Z layers";
 
         // process batches
         Segments processed_segments;
@@ -142,53 +145,78 @@ class Batch_processor_3 {
         size_t processed_count = 0;
         size_t batch_count = 0;
 
-        for (const auto& cell : grid_cells) {
-            const auto& [x, y, z] = cell.first;
-            const auto& cell_segments = cell.second;
+        // process grid cells by Z value
+        for (const auto& z_group : z_grouped_cells) {
+            LOG(INFO) << "Processing Z value = " << z_group.first << ", containing " 
+                      << z_group.second.size() << " cells";
+            
+            // process all cells with the same Z value
+            for (const auto& cell_coords : z_group.second) {
+                const auto& cell_segments = grid_cells[cell_coords];
+                
+                size_t remaining = cell_segments.size();
+                size_t offset = 0;
 
-            size_t remaining = cell_segments.size();
-            size_t offset = 0;
+                while (remaining > 0) {
+                    size_t space_left = MAX_BATCH_SIZE - current_batch.size();
+                    size_t to_add = std::min(space_left, remaining);
 
-            while (remaining > 0) {
-                size_t space_left = MAX_BATCH_SIZE - current_batch.size();
-                size_t to_add = std::min(space_left, remaining);
+                    // add segments to current batch
+                    for (size_t i = 0; i < to_add; ++i) {
+                        current_batch.push_back(segments[cell_segments[offset + i]]);
+                    }
 
-                // add segments to current batch
-                for (size_t i = 0; i < to_add; ++i) {
-                    current_batch.push_back(segments[cell_segments[offset + i]]);
+                    processed_count += to_add;
+
+                    // if batch is full or all segments are processed, process current batch
+                    if (current_batch.size() >= MAX_BATCH_SIZE - 1 ||
+                        processed_count >= total_segments) {
+                        batch_count++;
+                        LOG(INFO) << "Processing batch " << batch_count << " (" << current_batch.size()
+                                << " segments, progress: " << (processed_count * 100 / total_segments)
+                                << "%, Z layer: " << z_group.first << ")";
+
+                        regularize_func(current_batch);
+                        processed_segments.insert(processed_segments.end(), current_batch.begin(),
+                                                current_batch.end());
+
+                        // record batch indices
+                        if (batch_indices) {
+                            for (size_t i = 0; i < current_batch.size(); ++i) {
+                                batch_indices->push_back(batch_count);
+                            }
+                        }
+
+                        current_batch.clear();
+                        current_batch.reserve(MAX_BATCH_SIZE);
+                    }
+
+                    offset += to_add;
+                    remaining -= to_add;
                 }
-
-                processed_count += to_add;
-
-                // process batch if full or last segments
-                if (current_batch.size() >= MAX_BATCH_SIZE - 1 ||
-                    processed_count >= total_segments) {
-                    batch_count++;
-                    LOG(INFO) << "Processing batch " << batch_count << " (" << current_batch.size()
-                              << " segments, progress: " << (processed_count * 100 / total_segments)
-                              << "%)";
-
-                    regularize_func(current_batch);
-                    processed_segments.insert(processed_segments.end(), current_batch.begin(),
-                                              current_batch.end());
-                    current_batch.clear();
-                    current_batch.reserve(MAX_BATCH_SIZE);
-                }
-
-                offset += to_add;
-                remaining -= to_add;
             }
-        }
+            
+            // after processing a Z layer, if the current batch is not empty, process it
+            if (!current_batch.empty()) {
+                batch_count++;
+                LOG(INFO) << "Processing the last batch of Z layer " << z_group.first << " (" 
+                          << current_batch.size() << " segments, progress: " 
+                          << (processed_count * 100 / total_segments) << "%)";
 
-        // process final batch if not empty
-        if (!current_batch.empty()) {
-            batch_count++;
-            LOG(INFO) << "Processing batch " << batch_count << " (" << current_batch.size()
-                      << " segments, progress: 100%)";
+                regularize_func(current_batch);
+                processed_segments.insert(processed_segments.end(), current_batch.begin(),
+                                        current_batch.end());
 
-            regularize_func(current_batch);
-            processed_segments.insert(processed_segments.end(), current_batch.begin(),
-                                      current_batch.end());
+                // record batch indices
+                if (batch_indices) {
+                    for (size_t i = 0; i < current_batch.size(); ++i) {
+                        batch_indices->push_back(batch_count);
+                    }
+                }
+
+                current_batch.clear();
+                current_batch.reserve(MAX_BATCH_SIZE);
+            }
         }
 
         LOG(INFO) << "Batch processing completed: processed segments = "
@@ -300,9 +328,10 @@ class Angle_regularization_3 {
                 std::vector<std::size_t> segment_neighbors;
                 neighbor_query(i, segment_neighbors);
 
-                // find the neighbor with smallest angle difference (not too small and not perpendicular)
+                // find the neighbor with smallest angle difference (not too small and not
+                // perpendicular)
                 std::size_t best_neighbor_idx = segment_neighbors.size();
-                FT best_angle_diff = FT(CGAL_PI); // initialize with maximum possible angle
+                FT best_angle_diff = FT(CGAL_PI);  // initialize with maximum possible angle
                 Vector_3 best_neighbor_dir;
 
                 for (const auto& j : segment_neighbors) {
@@ -313,7 +342,8 @@ class Angle_regularization_3 {
                     dot = std::max(std::min(dot, FT(1)), FT(-1));
                     FT angle_with_neighbor = std::acos(dot);
 
-                    // skip if angle is too small (nearly parallel) or too large (nearly perpendicular)
+                    // skip if angle is too small (nearly parallel) or too large (nearly
+                    // perpendicular)
                     if (angle_with_neighbor < FT(0.1) ||  // ~5.7 degrees
                         std::abs(angle_with_neighbor - CGAL_PI / 2) < FT(0.1)) {
                         continue;
@@ -382,7 +412,7 @@ class Angle_regularization_3 {
         }
     }
 
-    static void regularize_with_batches(Segments& segments, const FT max_angle_degree = FT(10)) {
+    static void regularize_with_batches(Segments& segments, const FT max_angle_degree = FT(10), std::vector<int>* batch_indices = nullptr) {
         auto regularize_func = [max_angle_degree](Segments& batch) {
             Neighbor_query_3 neighbor_query(batch);
             Angle_regularization_3 angle_regularization(batch, max_angle_degree);
@@ -391,7 +421,7 @@ class Angle_regularization_3 {
             regularizer.regularize();
         };
 
-        Batch_processor_3::process_in_batches(segments, regularize_func);
+        Batch_processor_3::process_in_batches(segments, regularize_func, batch_indices);
     }
 };
 
@@ -400,17 +430,17 @@ class Offset_regularization_3 {
    private:
     Segments& segments;
     FT max_offset;
-    FT merge_threshold;  // threshold for merging segments
-    FT parallel_threshold; // threshold for parallel determination (cosine value)
+    FT merge_threshold;     // threshold for merging segments
+    FT parallel_threshold;  // threshold for parallel determination (cosine value)
     std::vector<std::vector<std::size_t>> parallel_groups;
     std::vector<bool> merged;  // track merged segments
 
    public:
     Offset_regularization_3(
-        Segments& segs, 
-        const FT max_offset_value = FT(0.5),
+        Segments& segs, const FT max_offset_value = FT(0.5),
         const FT merge_threshold_value = FT(0.1),  // default merge threshold is 0.1
-        const FT parallel_angle_degree = FT(5.7))  // default parallel angle threshold is 5.7 degrees
+        const FT parallel_angle_degree =
+            FT(5.7))  // default parallel angle threshold is 5.7 degrees
         : segments(segs),
           max_offset(max_offset_value),
           merge_threshold(merge_threshold_value),
@@ -463,41 +493,37 @@ class Offset_regularization_3 {
             if (std::abs(offset) > FT(0)) {
                 // get current segment direction
                 Vector_3 current_dir = segments[i].direction;
-                
+
                 // find the best offset direction based on nearest parallel neighbor
                 Vector_3 offset_dir;
                 bool found_good_direction = false;
-                
+
                 // get neighbors of current segment
                 std::vector<std::size_t> segment_neighbors;
                 neighbor_query(i, segment_neighbors);
-                
+
                 // find the nearest parallel neighbor
                 FT min_distance = std::numeric_limits<FT>::max();
                 std::size_t nearest_neighbor_idx = segment_neighbors.size();
-                
+
                 for (const auto& j : segment_neighbors) {
                     const Vector_3& neighbor_dir = segments[j].direction;
-                    
+
                     // check if neighbor is parallel (using the same threshold as in target)
                     FT dot_product = std::abs(current_dir * neighbor_dir);
                     if (std::abs(dot_product - FT(1)) <= parallel_threshold) {
                         // calculate midpoints
-                        Point_3 midpoint_i(
-                            (segments[i].source.x() + segments[i].target.x()) / 2,
-                            (segments[i].source.y() + segments[i].target.y()) / 2,
-                            (segments[i].source.z() + segments[i].target.z()) / 2
-                        );
-                        
-                        Point_3 midpoint_j(
-                            (segments[j].source.x() + segments[j].target.x()) / 2,
-                            (segments[j].source.y() + segments[j].target.y()) / 2,
-                            (segments[j].source.z() + segments[j].target.z()) / 2
-                        );
-                        
+                        Point_3 midpoint_i((segments[i].source.x() + segments[i].target.x()) / 2,
+                                           (segments[i].source.y() + segments[i].target.y()) / 2,
+                                           (segments[i].source.z() + segments[i].target.z()) / 2);
+
+                        Point_3 midpoint_j((segments[j].source.x() + segments[j].target.x()) / 2,
+                                           (segments[j].source.y() + segments[j].target.y()) / 2,
+                                           (segments[j].source.z() + segments[j].target.z()) / 2);
+
                         // calculate distance between midpoints
                         FT distance = CGAL::squared_distance(midpoint_i, midpoint_j);
-                        
+
                         // update nearest neighbor if this one is closer
                         if (distance < min_distance) {
                             min_distance = distance;
@@ -505,42 +531,45 @@ class Offset_regularization_3 {
                         }
                     }
                 }
-                
+
                 // if we found a parallel neighbor, use it to determine offset direction
                 if (nearest_neighbor_idx < segment_neighbors.size()) {
                     // calculate vector from current segment to nearest neighbor
-                    Point_3 midpoint_i(
-                        (segments[i].source.x() + segments[i].target.x()) / 2,
-                        (segments[i].source.y() + segments[i].target.y()) / 2,
-                        (segments[i].source.z() + segments[i].target.z()) / 2
-                    );
-                    
-                    Point_3 midpoint_j(
-                        (segments[nearest_neighbor_idx].source.x() + segments[nearest_neighbor_idx].target.x()) / 2,
-                        (segments[nearest_neighbor_idx].source.y() + segments[nearest_neighbor_idx].target.y()) / 2,
-                        (segments[nearest_neighbor_idx].source.z() + segments[nearest_neighbor_idx].target.z()) / 2
-                    );
-                    
+                    Point_3 midpoint_i((segments[i].source.x() + segments[i].target.x()) / 2,
+                                       (segments[i].source.y() + segments[i].target.y()) / 2,
+                                       (segments[i].source.z() + segments[i].target.z()) / 2);
+
+                    Point_3 midpoint_j((segments[nearest_neighbor_idx].source.x() +
+                                        segments[nearest_neighbor_idx].target.x()) /
+                                           2,
+                                       (segments[nearest_neighbor_idx].source.y() +
+                                        segments[nearest_neighbor_idx].target.y()) /
+                                           2,
+                                       (segments[nearest_neighbor_idx].source.z() +
+                                        segments[nearest_neighbor_idx].target.z()) /
+                                           2);
+
                     Vector_3 to_neighbor = midpoint_j - midpoint_i;
-                    
+
                     // project this vector onto the plane perpendicular to segment direction
                     Vector_3 projected = to_neighbor - (to_neighbor * current_dir) * current_dir;
-                    
+
                     // if projection is too small, fall back to default method
                     if (projected.squared_length() > FT(0.000001)) {
                         offset_dir = projected / std::sqrt(projected.squared_length());
                         found_good_direction = true;
                     }
                 }
-                
+
                 // if no good direction found from neighbors, use default method
                 if (!found_good_direction) {
                     offset_dir = CGAL::cross_product(current_dir, Vector_3(FT(0), FT(0), FT(1)));
-                    
+
                     if (offset_dir.squared_length() < FT(0.000001)) {
-                        offset_dir = CGAL::cross_product(current_dir, Vector_3(FT(0), FT(1), FT(0)));
+                        offset_dir =
+                            CGAL::cross_product(current_dir, Vector_3(FT(0), FT(1), FT(0)));
                     }
-                    
+
                     offset_dir = offset_dir / std::sqrt(offset_dir.squared_length());
                 }
 
@@ -553,7 +582,7 @@ class Offset_regularization_3 {
 
         // collect segments to be merged
         std::vector<std::size_t> segments_to_remove;
-        
+
         // then check and merge close segments
         for (const auto& group : parallel_groups) {
             for (size_t i = 0; i < group.size(); ++i) {
@@ -603,23 +632,25 @@ class Offset_regularization_3 {
                 }
             }
         }
-        
+
         // sort and remove duplicates
         if (!segments_to_remove.empty()) {
-            std::sort(segments_to_remove.begin(), segments_to_remove.end(), std::greater<std::size_t>());
-            segments_to_remove.erase(std::unique(segments_to_remove.begin(), segments_to_remove.end()), 
-                                    segments_to_remove.end());
-            
+            std::sort(segments_to_remove.begin(), segments_to_remove.end(),
+                      std::greater<std::size_t>());
+            segments_to_remove.erase(
+                std::unique(segments_to_remove.begin(), segments_to_remove.end()),
+                segments_to_remove.end());
+
             // remove segments from highest index to lowest to avoid invalidating indices
             for (const auto& idx : segments_to_remove) {
                 if (idx < segments.size()) {
                     segments.erase(segments.begin() + idx);
                 }
             }
-            
+
             // update merged flags array size
             merged.resize(segments.size(), false);
-            
+
             LOG(INFO) << "Removed " << segments_to_remove.size() << " merged segments";
         }
     }
@@ -635,39 +666,32 @@ class Offset_regularization_3 {
             merged.resize(segments.size(), false);
         }
     }
-    
-    // check if any parallel groups exist
-    bool has_groups() const {
-        return !parallel_groups.empty();
-    }
 
-    static void regularize_with_batches(
-        Segments& segments, 
-        const FT max_offset = FT(1.0),
-        const FT merge_threshold = FT(0.2),
-        const FT parallel_angle_degree = FT(10.0)
-    ) {
-        auto regularize_func = [max_offset, merge_threshold, parallel_angle_degree](Segments& batch) {
+    // check if any parallel groups exist
+    bool has_groups() const { return !parallel_groups.empty(); }
+
+    static void regularize_with_batches(Segments& segments, const FT max_offset = FT(1.0),
+                                        const FT merge_threshold = FT(0.2),
+                                        const FT parallel_angle_degree = FT(10.0),
+                                        std::vector<int>* batch_indices = nullptr) {
+        auto regularize_func = [max_offset, merge_threshold,
+                                parallel_angle_degree](Segments& batch) {
             // create and setup offset regularization
             Neighbor_query_3 neighbor_query(batch);
-            Offset_regularization_3 offset_regularization(
-                batch, 
-                max_offset, 
-                merge_threshold,
-                parallel_angle_degree
-            );
-            
+            Offset_regularization_3 offset_regularization(batch, max_offset, merge_threshold,
+                                                          parallel_angle_degree);
+
             // if no existing parallel groups, automatically detect and add them
             if (!offset_regularization.has_groups()) {
                 // calculate parallel threshold
                 FT parallel_threshold = std::cos(parallel_angle_degree * CGAL_PI / FT(180));
-                
+
                 // identify parallel groups
                 std::vector<std::vector<std::size_t>> parallel_groups;
                 for (std::size_t i = 0; i < batch.size(); ++i) {
                     bool found_group = false;
                     const Vector_3& dir_i = batch[i].direction;
-                    
+
                     for (auto& group : parallel_groups) {
                         const Vector_3& group_dir = batch[group[0]].direction;
                         FT dot_product = std::abs(dir_i * group_dir);
@@ -677,12 +701,12 @@ class Offset_regularization_3 {
                             break;
                         }
                     }
-                    
+
                     if (!found_group) {
                         parallel_groups.push_back({i});
                     }
                 }
-                
+
                 // add parallel groups
                 for (const auto& group : parallel_groups) {
                     if (group.size() > 1) {
@@ -691,13 +715,13 @@ class Offset_regularization_3 {
                     }
                 }
             }
-            
+
             Quadratic_program qp;
             Offset_regularizer regularizer(batch, neighbor_query, offset_regularization, qp);
             regularizer.regularize();
         };
 
-        Batch_processor_3::process_in_batches(segments, regularize_func);
+        Batch_processor_3::process_in_batches(segments, regularize_func, batch_indices);
     }
 };
 
@@ -725,10 +749,10 @@ class Combined_regularization_3 {
               merge_threshold(merge_thresh) {}
     };
 
-    static void regularize(Segments& segments, const Parameters& params = Parameters()) {
+    static void regularize(Segments& segments, const Parameters& params = Parameters(), std::vector<int>* batch_indices = nullptr) {
         auto regularize_func = [&params](Segments& batch) { regularize_batch(batch, params); };
 
-        Batch_processor_3::process_in_batches(segments, regularize_func);
+        Batch_processor_3::process_in_batches(segments, regularize_func, batch_indices);
     }
 
    private:
@@ -772,9 +796,7 @@ class Combined_regularization_3 {
         Neighbor_query_3 offset_neighbor_query(batch);
         // pass the parallel angle degree parameter
         Offset_regularization_3 offset_regularization(
-            batch, 
-            params.max_offset,
-            params.merge_threshold,
+            batch, params.max_offset, params.merge_threshold,
             params.parallel_angle_degree  // pass angle in degrees directly
         );
 

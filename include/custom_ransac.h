@@ -23,6 +23,7 @@ using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
 using Point_3 = Kernel::Point_3;
 using Vector_3 = Kernel::Vector_3;
 using Plane_3 = Kernel::Plane_3;
+using Line_3 = Kernel::Line_3;
 
 // types for ransac point-normal pairs
 using Point_with_normal = std::pair<Point_3, Vector_3>;
@@ -35,12 +36,22 @@ using Efficient_ransac_traits =
     CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, Pwn_vector, Point_map, Normal_map>;
 using Efficient_ransac = CGAL::Shape_detection::Efficient_RANSAC<Efficient_ransac_traits>;
 using Plane_shape = CGAL::Shape_detection::Plane<Efficient_ransac_traits>;
+using Cylinder_shape = CGAL::Shape_detection::Cylinder<Efficient_ransac_traits>;
 
 // plane detection result structure
 struct Plane_result {
     Plane_3 plane;                            // detected plane
     std::vector<std::size_t> inlier_indices;  // indices of points belonging to the plane
     Pwn_vector points_with_normals;  // points and normals on the plane (part of pwn_vector)
+};
+
+// cylinder detection result structure
+struct Cylinder_result {
+    Point_3 center;                          // point on cylinder axis
+    Vector_3 axis;                           // axis direction
+    double radius;                           // cylinder radius
+    std::vector<std::size_t> inlier_indices; // indices of points belonging to the cylinder
+    Pwn_vector points_with_normals;          // points and normals on the cylinder
 };
 
 // ===== 2d ransac line segment detection =====

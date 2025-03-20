@@ -103,7 +103,7 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
 
     // create rerun logger
-    const auto rr = rerun::RecordingStream("3D-2D RANSAC logger");
+    const auto rr = rerun::RecordingStream("3D_2D_RANSAC_logger");
     rr.spawn().exit_on_failure();
 
     // convert model to point cloud
@@ -165,13 +165,13 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
             rr_inliers.push_back(rerun::Position3D{
                 static_cast<float>(p.x()), static_cast<float>(p.y()), static_cast<float>(p.z())});
         }
-        rr.log("3D RANSAC/plane_" + std::to_string(plane_count) + "_inliers",
+        rr.log("3D_RANSAC/plane_" + std::to_string(plane_count) + "_inliers",
                rerun::Points3D(rr_inliers).with_radii({0.1f}));
 
         // project 3D points to 2D plane
         double distance_threshold = 100.0;  // projection distance threshold
-        auto projected =
-            custom_ransac::Ransac_3d::project_points_to_plane(cgal_points, plane_result, distance_threshold);
+        auto projected = custom_ransac::Ransac_3d::project_points_to_plane(
+            cgal_points, plane_result, distance_threshold);
 
         // log 2D projected points to rerun
         std::vector<rerun::Position2D> rr_projected_points;
@@ -179,7 +179,7 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
             rr_projected_points.push_back(
                 rerun::Position2D{static_cast<float>(p.x), static_cast<float>(p.y)});
         }
-        rr.log("2D projection/plane_projected_points",
+        rr.log("2D_projection/plane_projected_points",
                rerun::Points2D(rr_projected_points).with_radii({0.1f}));
 
         // set 2D RANSAC parameters
@@ -189,13 +189,13 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
         line_params.min_inliers = 4;        // minimum number of inliers
         line_params.tolerance = 0.05;       // maximum distance
         line_params.min_length = 0.1;       // minimum length
-        line_params.split_threshold = 2.0;  // split threshold
+        line_params.split_threshold = 1.0;  // split threshold
 
         // execute 2D line detection
         auto lines_2d = ransac_2d.detect(projected.points_2d, line_params);
         LOG(INFO) << "Plane " << plane_count << ": detected " << lines_2d.size()
                   << " line segments";
-        
+
         // log 2D line segments to rerun
         std::vector<rerun::Collection<rerun::Vec2D>> rr_line_segments;
         for (const auto& line : lines_2d) {
@@ -203,7 +203,7 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
                 rerun::Vec2D{static_cast<float>(line.start.x), static_cast<float>(line.start.y)},
                 rerun::Vec2D{static_cast<float>(line.end.x), static_cast<float>(line.end.y)}});
         }
-        rr.log("2D projection/plane_line_segments", rerun::LineStrips2D(rr_line_segments));
+        rr.log("2D_projection/plane_line_segments", rerun::LineStrips2D(rr_line_segments));
 
         // convert 2D segments to 3D and record
         std::vector<rerun::Collection<rerun::Vec3D>> line_segments_3d;
@@ -224,7 +224,7 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
         }
 
         // record 3D segments to Rerun
-        rr.log("2D RANSAC/plane" + std::to_string(plane_count) + "_segments",
+        rr.log("2D_RANSAC/plane" + std::to_string(plane_count) + "_segments",
                rerun::LineStrips3D(line_segments_3d).with_radii({0.05f}));
 
         plane_count++;
@@ -379,6 +379,13 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
 
     auto cloud = dynamic_cast<PointCloud*>(model);
     auto points = cloud->get_vertex_property<vec3>("v:point");
+    // check normals, if not exist, estimate
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    if (!normals) {
+        LOG(INFO) << "Point cloud does not have normals. Estimating...";
+        int k_neighbors = 16;
+        
+    }
 
     // log point cloud to rerun
     std::vector<rerun::Position3D> rr_point_cloud;
@@ -408,6 +415,20 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
 
     // build delaunay graph
     Graph* delaunay_graph = build_delaunay_graph(cloud);
+
+    // log delaunay graph
+    std::vector<rerun::Collection<rerun::Vec3D>> delaunay_strips3d;
+    for (const auto& e : delaunay_graph->edges()) {
+        auto source = delaunay_graph->source(e);
+        auto target = delaunay_graph->target(e);
+        auto start = delaunay_graph->position(source);
+        auto end = delaunay_graph->position(target);
+        rerun::Collection<rerun::Vec3D> strip = {
+            {static_cast<float>(start.x), static_cast<float>(start.y), static_cast<float>(start.z)},
+            {static_cast<float>(end.x), static_cast<float>(end.y), static_cast<float>(end.z)}};
+        delaunay_strips3d.push_back(strip);
+    }
+    rr.log("delaunay_graph", rerun::LineStrips3D(delaunay_strips3d).with_radii({0.01f}));
 
     // combine graphs
     const float max_edge_length = 2.0f;
@@ -439,23 +460,78 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
     }
 
     // execute global 3D QP regularization
+    std::vector<int> batch_indices;
     // parameters: max angle deviation, max offset, parallel angle threshold, merge threshold
     // custom_3d::Combined_regularization_3::Parameters params(45, 0.2, 10.0, 0.1);
-    // custom_3d::Combined_regularization_3::regularize(segments, params);
-    // custom_3d::Angle_regularization_3::regularize_with_batches(segments, 45);
-    custom_3d::Offset_regularization_3::regularize_with_batches(segments, 0.3, 0.3, 25);
+    // custom_3d::Combined_regularization_3::regularize(segments, params, &batch_indices);
+    custom_3d::Angle_regularization_3::regularize_with_batches(segments, 45, &batch_indices);
+    // custom_3d::Offset_regularization_3::regularize_with_batches(segments, 0.3, 0.3, 25, &batch_indices);
 
-    // log regularized segments
-    std::vector<rerun::Collection<rerun::Vec3D>> qp_strips3d;
-    for (const auto& seg : segments) {
-        auto s = seg.source;
-        auto t = seg.target;
-        rerun::Collection<rerun::Vec3D> strip = {
-            {static_cast<float>(s.x()), static_cast<float>(s.y()), static_cast<float>(s.z())},
-            {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}};
-        qp_strips3d.push_back(strip);
+    // log regularized segments to rerun
+    if (!batch_indices.empty()) {
+        // ensure batch_indices and segments size match
+        if (batch_indices.size() != segments.size()) {
+            LOG(WARNING) << "Batch index size (" << batch_indices.size() 
+                        << ") does not match segments size (" << segments.size() << ")!";
+                  
+            // if segment merging occurred, adjust batch_indices
+            if (batch_indices.size() > segments.size()) {
+                LOG(INFO) << "Detected possible segment merging, truncating batch_indices to match segments size";
+                batch_indices.resize(segments.size());
+            } else {
+                LOG(INFO) << "Detected possible extra segments, assigning last batch index to extra segments";
+                int last_batch = batch_indices.empty() ? 0 : batch_indices.back();
+                batch_indices.resize(segments.size(), last_batch);
+            }
+        }
+        
+        // find max batch index
+        int max_batch_idx = *std::max_element(batch_indices.begin(), batch_indices.end());
+        LOG(INFO) << "Recording " << segments.size() << " segments grouped into " 
+                  << max_batch_idx + 1 << " batches";
+        
+        // group segments by batch
+        std::vector<std::vector<rerun::Collection<rerun::Vec3D>>> batch_segments(max_batch_idx + 1);
+        
+        // group segments by batch
+        for (size_t j = 0; j < segments.size(); ++j) {
+            int batch_idx = batch_indices[j];
+            if (batch_idx >= 0 && batch_idx <= max_batch_idx) {
+                auto s = segments[j].source;
+                auto t = segments[j].target;
+                rerun::Collection<rerun::Vec3D> strip = {
+                    {static_cast<float>(s.x()), static_cast<float>(s.y()), static_cast<float>(s.z())},
+                    {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}
+                };
+                batch_segments[batch_idx].push_back(strip);
+            }
+        }
+        
+        // record each batch's segments
+        for (int i = 0; i <= max_batch_idx; ++i) {
+            if (!batch_segments[i].empty()) {
+                rr.log("regularized_segments/batch_" + std::to_string(i), 
+                       rerun::LineStrips3D(batch_segments[i]).with_radii({0.01f}));
+            }
+        }
+    } else {
+        // if no batch_indices, record all segments as a single group
+        LOG(INFO) << "Recording " << segments.size() << " segments as a single group";
+        std::vector<rerun::Collection<rerun::Vec3D>> qp_strips3d;
+        qp_strips3d.reserve(segments.size());
+        
+        for (const auto& seg : segments) {
+            auto s = seg.source;
+            auto t = seg.target;
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(s.x()), static_cast<float>(s.y()), static_cast<float>(s.z())},
+                {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}
+            };
+            qp_strips3d.push_back(strip);
+        }
+        
+        rr.log("regularized_segments", rerun::LineStrips3D(qp_strips3d).with_radii({0.01f}));
     }
-    rr.log("regularized_segments", rerun::LineStrips3D(qp_strips3d).with_radii({0.01f}));
 
     // cleanup
     delete knn_graph;
