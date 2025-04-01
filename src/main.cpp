@@ -19,6 +19,8 @@
 
 #include "custom_3d_regularization.h"
 #include "custom_ransac.h"
+#include "gco.h"
+#include "segments_3.h"
 
 using namespace easy3d;
 using namespace rerun::demo;
@@ -142,7 +144,7 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
     // set 3D RANSAC parameters
     custom_ransac::Ransac_3d::Parameters plane_params;
     plane_params.probability = 0.01;      // probability of missing the largest plane
-    plane_params.min_points = 4;          // minimum number of points
+    plane_params.min_points = 10;         // minimum number of points
     plane_params.epsilon = 0.1;           // maximum distance
     plane_params.normal_threshold = 0.0;  // normal angle threshold
     plane_params.cluster_epsilon = 0.5;   // cluster threshold
@@ -169,7 +171,7 @@ bool run_custom_ransac(Viewer* viewer, Model* model) {
                rerun::Points3D(rr_inliers).with_radii({0.1f}));
 
         // project 3D points to 2D plane
-        double distance_threshold = 100.0;  // projection distance threshold
+        double distance_threshold = 2.0;  // projection distance threshold
         auto projected = custom_ransac::Ransac_3d::project_points_to_plane(
             cgal_points, plane_result, distance_threshold);
 
@@ -370,6 +372,64 @@ Graph* combine_graphs(Graph* knn_graph, Graph* delaunay_graph, float max_edge_le
     return combined_graph;
 }
 
+// a method to construct the dual-graph from a graph
+Graph* construct_dual_graph(Graph* graph) {
+    Graph* dual_graph = new Graph;
+
+    // map from edge index to vertex in dual graph
+    std::map<int, Graph::Vertex> edge_to_vertex;
+
+    // step 1: create a vertex for each edge (use the midpoint of the edge as the vertex position)
+    for (const auto& e : graph->edges()) {
+        auto source = graph->source(e);
+        auto target = graph->target(e);
+        auto source_pos = graph->position(source);
+        auto target_pos = graph->position(target);
+
+        // calculate the midpoint of the edge as the position of the vertex in the dual graph
+        vec3 midpoint = (source_pos + target_pos) * 0.5f;
+        auto dual_vertex = dual_graph->add_vertex(midpoint);
+
+        // store the edge index to the dual vertex mapping
+        edge_to_vertex[e.idx()] = dual_vertex;
+    }
+
+    // step 2: connect all dual vertices that are incident to the same original vertex
+    // original vertex -> list of edges incident to the vertex
+    std::map<int, std::vector<int>> vertex_to_edges;
+
+    // collect the edges incident to each vertex
+    for (const auto& e : graph->edges()) {
+        auto source = graph->source(e);
+        auto target = graph->target(e);
+
+        vertex_to_edges[source.idx()].push_back(e.idx());
+        vertex_to_edges[target.idx()].push_back(e.idx());
+    }
+
+    // create edges between dual vertices that are incident to the same original vertex
+    for (const auto& [vertex_idx, edges] : vertex_to_edges) {
+        // for each pair of edges incident to the same vertex, add an edge in the dual graph
+        for (size_t i = 0; i < edges.size(); ++i) {
+            for (size_t j = i + 1; j < edges.size(); ++j) {
+                int edge1_idx = edges[i];
+                int edge2_idx = edges[j];
+
+                auto dual_vertex1 = edge_to_vertex[edge1_idx];
+                auto dual_vertex2 = edge_to_vertex[edge2_idx];
+
+                // add an edge in the dual graph
+                dual_graph->add_edge(dual_vertex1, dual_vertex2);
+            }
+        }
+    }
+
+    LOG(INFO) << "Dual graph constructed with " << dual_graph->vertices_size() << " vertices and "
+              << dual_graph->edges_size() << " edges";
+
+    return dual_graph;
+}
+
 bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
 
@@ -384,7 +444,6 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
     if (!normals) {
         LOG(INFO) << "Point cloud does not have normals. Estimating...";
         int k_neighbors = 16;
-        
     }
 
     // log point cloud to rerun
@@ -396,7 +455,7 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
     rr.log("points", rerun::Points3D(rr_point_cloud).with_radii({0.05f}));
 
     // build knn graph
-    int k_neighbors = 16;
+    int k_neighbors = 4;
     Graph* knn_graph = build_knn_graph(cloud, k_neighbors);
 
     // log original knn graph
@@ -431,7 +490,7 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
     rr.log("delaunay_graph", rerun::LineStrips3D(delaunay_strips3d).with_radii({0.01f}));
 
     // combine graphs
-    const float max_edge_length = 2.0f;
+    const float max_edge_length = 1.0f;
     Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
 
     // log combined graph
@@ -449,93 +508,161 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
     rr.log("combined_graph", rerun::LineStrips3D(combined_strips3d).with_radii({0.01f}));
 
     // transform to CGAL segments
-    std::vector<custom_3d::Segment_3> segments;
-    for (const auto& e : global_graph->edges()) {
-        vec3 source = global_graph->position(global_graph->source(e));
-        vec3 target = global_graph->position(global_graph->target(e));
-        custom_3d::Point_3 s(source.x, source.y, source.z);
-        custom_3d::Point_3 t(target.x, target.y, target.z);
-        custom_3d::Segment_3 seg(s, t);
-        segments.push_back(seg);
-    }
+    // std::vector<custom_3d::Segment_3> segments;
+    // for (const auto& e : global_graph->edges()) {
+    //     vec3 source = global_graph->position(global_graph->source(e));
+    //     vec3 target = global_graph->position(global_graph->target(e));
+    //     custom_3d::Point_3 s(source.x, source.y, source.z);
+    //     custom_3d::Point_3 t(target.x, target.y, target.z);
+    //     custom_3d::Segment_3 seg(s, t);
+    //     segments.push_back(seg);
+    // }
 
-    // execute global 3D QP regularization
+    // execute global 3D QP regularization using segments_3 approach
     std::vector<int> batch_indices;
-    // parameters: max angle deviation, max offset, parallel angle threshold, merge threshold
-    // custom_3d::Combined_regularization_3::Parameters params(45, 0.2, 10.0, 0.1);
-    // custom_3d::Combined_regularization_3::regularize(segments, params, &batch_indices);
-    custom_3d::Angle_regularization_3::regularize_with_batches(segments, 45, &batch_indices);
-    // custom_3d::Offset_regularization_3::regularize_with_batches(segments, 0.3, 0.3, 25, &batch_indices);
 
-    // log regularized segments to rerun
-    if (!batch_indices.empty()) {
-        // ensure batch_indices and segments size match
-        if (batch_indices.size() != segments.size()) {
-            LOG(WARNING) << "Batch index size (" << batch_indices.size() 
-                        << ") does not match segments size (" << segments.size() << ")!";
-                  
-            // if segment merging occurred, adjust batch_indices
-            if (batch_indices.size() > segments.size()) {
-                LOG(INFO) << "Detected possible segment merging, truncating batch_indices to match segments size";
-                batch_indices.resize(segments.size());
-            } else {
-                LOG(INFO) << "Detected possible extra segments, assigning last batch index to extra segments";
-                int last_batch = batch_indices.empty() ? 0 : batch_indices.back();
-                batch_indices.resize(segments.size(), last_batch);
-            }
-        }
-        
-        // find max batch index
-        int max_batch_idx = *std::max_element(batch_indices.begin(), batch_indices.end());
-        LOG(INFO) << "Recording " << segments.size() << " segments grouped into " 
-                  << max_batch_idx + 1 << " batches";
-        
-        // group segments by batch
-        std::vector<std::vector<rerun::Collection<rerun::Vec3D>>> batch_segments(max_batch_idx + 1);
-        
-        // group segments by batch
-        for (size_t j = 0; j < segments.size(); ++j) {
-            int batch_idx = batch_indices[j];
-            if (batch_idx >= 0 && batch_idx <= max_batch_idx) {
-                auto s = segments[j].source;
-                auto t = segments[j].target;
-                rerun::Collection<rerun::Vec3D> strip = {
-                    {static_cast<float>(s.x()), static_cast<float>(s.y()), static_cast<float>(s.z())},
-                    {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}
-                };
-                batch_segments[batch_idx].push_back(strip);
-            }
-        }
-        
-        // record each batch's segments
-        for (int i = 0; i <= max_batch_idx; ++i) {
-            if (!batch_segments[i].empty()) {
-                rr.log("regularized_segments/batch_" + std::to_string(i), 
-                       rerun::LineStrips3D(batch_segments[i]).with_radii({0.01f}));
-            }
-        }
-    } else {
-        // if no batch_indices, record all segments as a single group
-        LOG(INFO) << "Recording " << segments.size() << " segments as a single group";
-        std::vector<rerun::Collection<rerun::Vec3D>> qp_strips3d;
-        qp_strips3d.reserve(segments.size());
-        
-        for (const auto& seg : segments) {
-            auto s = seg.source;
-            auto t = seg.target;
-            rerun::Collection<rerun::Vec3D> strip = {
-                {static_cast<float>(s.x()), static_cast<float>(s.y()), static_cast<float>(s.z())},
-                {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}
-            };
-            qp_strips3d.push_back(strip);
-        }
-        
-        rr.log("regularized_segments", rerun::LineStrips3D(qp_strips3d).with_radii({0.01f}));
+    // use segments_3 to directly regularize the graph structure
+    LOG(INFO) << "Using the graph structure for angle regularization...";
+
+    // Create a single neighbor_query instance before regularization
+    segments_3::Neighbor_query_3 neighbor_query(global_graph);
+
+    // Get the original segments for later comparison
+    auto& original_segments = const_cast<segments_3::Segments&>(neighbor_query.get_segments());
+
+    // Create a copy of original segments for regularization
+    segments_3::Segments regularized_segments = original_segments;
+
+    // Create angle regularization object
+    segments_3::Angle_regularization_3 angle_regularization(regularized_segments, global_graph,
+                                                            60.0);
+
+    // Create QP solver
+    segments_3::Quadratic_program qp;
+
+    // Create and execute regularization
+    segments_3::Regularizer_3 regularizer(regularized_segments, neighbor_query,
+                                          angle_regularization, qp);
+    LOG(INFO) << "Running regularization...";
+    regularizer.regularize();
+    LOG(INFO) << "Regularization completed";
+
+    // convert the segments_3 segments to the custom_3d segment format for logging
+    std::vector<custom_3d::Segment_3> custom_segments;
+    for (const auto& seg : regularized_segments) {
+        custom_3d::Point_3 s(seg.source.x(), seg.source.y(), seg.source.z());
+        custom_3d::Point_3 t(seg.target.x(), seg.target.y(), seg.target.z());
+        custom_segments.emplace_back(s, t);
     }
+
+    // log regularized segments to rerun with green color
+    LOG(INFO) << "Recording " << regularized_segments.size() << " regularized segments";
+    std::vector<rerun::Collection<rerun::Vec3D>> regularized_strips;
+    regularized_strips.reserve(regularized_segments.size());
+
+    for (const auto& seg : regularized_segments) {
+        auto s = seg.source;
+        auto t = seg.target;
+        rerun::Collection<rerun::Vec3D> strip = {
+            {static_cast<float>(s.x()), static_cast<float>(s.y()), static_cast<float>(s.z())},
+            {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}};
+        regularized_strips.push_back(strip);
+    }
+
+    rr.log("regularized_segments", rerun::LineStrips3D(regularized_strips).with_radii({0.01f}));
+
+    // // log regularized segments to rerun
+    // if (!batch_indices.empty()) {
+    //     // ensure batch_indices and segments size match
+    //     if (batch_indices.size() != segments.size()) {
+    //         LOG(WARNING) << "Batch index size (" << batch_indices.size()
+    //                     << ") does not match segments size (" << segments.size() << ")!";
+    //
+    //         // if segment merging occurred, adjust batch_indices
+    //         if (batch_indices.size() > segments.size()) {
+    //             LOG(INFO) << "Detected possible segment merging, truncating batch_indices to
+    //             match segments size"; batch_indices.resize(segments.size());
+    //         } else {
+    //             LOG(INFO) << "Detected possible extra segments, assigning last batch index to
+    //             extra segments"; int last_batch = batch_indices.empty() ? 0 :
+    //             batch_indices.back(); batch_indices.resize(segments.size(), last_batch);
+    //         }
+    //     }
+    //
+    //     // find max batch index
+    //     int max_batch_idx = *std::max_element(batch_indices.begin(), batch_indices.end());
+    //     LOG(INFO) << "Recording " << segments.size() << " segments grouped into "
+    //               << max_batch_idx + 1 << " batches";
+    //
+    //     // group segments by batch
+    //     std::vector<std::vector<rerun::Collection<rerun::Vec3D>>> batch_segments(max_batch_idx +
+    //     1);
+    //
+    //     // group segments by batch
+    //     for (size_t j = 0; j < segments.size(); ++j) {
+    //         int batch_idx = batch_indices[j];
+    //         if (batch_idx >= 0 && batch_idx <= max_batch_idx) {
+    //             auto s = segments[j].source;
+    //             auto t = segments[j].target;
+    //             rerun::Collection<rerun::Vec3D> strip = {
+    //                 {static_cast<float>(s.x()), static_cast<float>(s.y()),
+    //                 static_cast<float>(s.z())}, {static_cast<float>(t.x()),
+    //                 static_cast<float>(t.y()), static_cast<float>(t.z())}
+    //             };
+    //             batch_segments[batch_idx].push_back(strip);
+    //         }
+    //     }
+    //
+    //     // record each batch's segments
+    //     for (int i = 0; i <= max_batch_idx; ++i) {
+    //         if (!batch_segments[i].empty()) {
+    //             rr.log("regularized_segments/batch_" + std::to_string(i),
+    //                    rerun::LineStrips3D(batch_segments[i]).with_radii({0.01f}));
+    //         }
+    //     }
+    // } else {
+    //     // if no batch_indices, record all segments as a single group
+    //     LOG(INFO) << "Recording " << segments.size() << " segments as a single group";
+    //     std::vector<rerun::Collection<rerun::Vec3D>> qp_strips3d;
+    //     qp_strips3d.reserve(segments.size());
+    //
+    //     for (const auto& seg : segments) {
+    //         auto s = seg.source;
+    //         auto t = seg.target;
+    //         rerun::Collection<rerun::Vec3D> strip = {
+    //             {static_cast<float>(s.x()), static_cast<float>(s.y()),
+    //             static_cast<float>(s.z())}, {static_cast<float>(t.x()),
+    //             static_cast<float>(t.y()), static_cast<float>(t.z())}
+    //         };
+    //         qp_strips3d.push_back(strip);
+    //     }
+    //
+    //     rr.log("regularized_segments", rerun::LineStrips3D(qp_strips3d).with_radii({0.01f}));
+    // }
 
     // cleanup
     delete knn_graph;
     delete delaunay_graph;
     delete global_graph;
+    return true;
+}
+
+bool run_gco(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+
+    // build knn graph
+    int k_neighbors = 10;
+    Graph* knn_graph = build_knn_graph(cloud, k_neighbors);
+
+    // build delaunay graph
+    Graph* delaunay_graph = build_delaunay_graph(cloud);
+
+    // combine graphs
+    const float max_edge_length = 2.0f;
+    Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
+
     return true;
 }

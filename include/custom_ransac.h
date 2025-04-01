@@ -94,8 +94,8 @@ class Ransac_2d {
     std::vector<Line> detect(const std::vector<Point>& points,
                              const Parameters& params = Parameters()) {
         std::vector<Line> lines;
-        std::vector<size_t> all_remaining_indices(points.size());
-        std::iota(all_remaining_indices.begin(), all_remaining_indices.end(), 0);
+        std::vector<size_t> remaining_indices(points.size());
+        std::iota(remaining_indices.begin(), remaining_indices.end(), 0);
 
         // adaptive inlier threshold (default is 10% of point cloud size)
         size_t inlier_thres =
@@ -104,7 +104,7 @@ class Ransac_2d {
         if (points.size() <= params.min_inliers) return lines;
 
         while (inlier_thres >= params.min_inliers) {
-            std::vector<size_t> remaining_indices = all_remaining_indices;
+            LOG(INFO) << "inlier_thres: " << inlier_thres << " remaining_indices.size(): " << remaining_indices.size();
             std::vector<Line> candidate_lines;
 
             size_t iter = 0;
@@ -121,10 +121,6 @@ class Ransac_2d {
                 // skip overlapping or too distant points
                 double distance = std::hypot(p1.x - p2.x, p1.y - p2.y);
                 if (distance < 1e-6) {
-                    iter++;
-                    continue;
-                }
-                if (distance > params.max_length) {
                     iter++;
                     continue;
                 }
@@ -157,7 +153,7 @@ class Ransac_2d {
                 double line_length = std::hypot(candidate_line.end.x - candidate_line.start.x,
                                                 candidate_line.end.y - candidate_line.start.y);
 
-                if (line_length < params.min_length) {
+                if (line_length < params.min_length || line_length > params.max_length) {
                     iter++;
                     continue;
                 }
@@ -449,34 +445,20 @@ class Ransac_3d {
         result.plane = plane_result.plane;
         const Plane_3& plane = plane_result.plane;
 
-        // get plane inliers minmax z values
-        double min_z = std::numeric_limits<double>::infinity();
-        double max_z = -std::numeric_limits<double>::infinity();
-        for (const auto& pwn : plane_result.points_with_normals) {
-            min_z = std::min(min_z, pwn.first.z());
-            max_z = std::max(max_z, pwn.first.z());
-        }
-
-        // get plane normal
+        // get plane normal vector
         Vector_3 plane_normal = plane.orthogonal_vector();
         plane_normal = plane_normal / std::sqrt(plane_normal.squared_length());
 
-        // create z-axis vector
-        Vector_3 z_axis(0, 0, 1);
+        // check if plane is near horizontal or vertical
+        bool is_near_horizontal = std::abs(plane_normal.z()) > 0.95;  // near horizontal
+        bool is_near_vertical = std::abs(plane_normal.z()) < 0.05;   // near vertical
 
-        // create x-axis vector
-        Vector_3 x_axis = CGAL::cross_product(z_axis, plane_normal);
-
-        // check if x-axis is close to zero vector (plane normal is almost parallel to z-axis)
-        if (x_axis.squared_length() < 1e-10) {
-            // use another vector for cross product
-            Vector_3 alternate_axis(1, 0, 0);
-            x_axis = CGAL::cross_product(alternate_axis, plane_normal);
-        }
+        // get orthogonal basis for the plane using built-in methods
+        Vector_3 x_axis = plane.base1();
+        Vector_3 y_axis = plane.base2();
+        
+        // normalize the vectors
         x_axis = x_axis / std::sqrt(x_axis.squared_length());
-
-        // create y-axis vector
-        Vector_3 y_axis = CGAL::cross_product(plane_normal, x_axis);
         y_axis = y_axis / std::sqrt(y_axis.squared_length());
 
         // get a point on the plane as origin
@@ -487,127 +469,58 @@ class Ransac_3d {
         result.x_axis = x_axis;
         result.y_axis = y_axis;
 
+        // get z-value range of points on the plane
+        double min_z = std::numeric_limits<double>::infinity();
+        double max_z = -std::numeric_limits<double>::infinity();
+        for (const auto& pwn : plane_result.points_with_normals) {
+            min_z = std::min(min_z, pwn.first.z());
+            max_z = std::max(max_z, pwn.first.z());
+        }
+
+        // process each point
         for (size_t i = 0; i < all_points.size(); ++i) {
             const Point_3& point = all_points[i];
+            
+            // check if z-value is within range
             if (point.z() < min_z || point.z() > max_z) {
                 continue;
             }
 
-            // 1. plane A is the plane detected by RANSAC
-            // 2. plane B is the plane parallel to world xy plane and passes through point p (i.e.
-            // z=point.z() horizontal plane)
-            // 3. plane C is the plane perpendicular to the first two planes and passes through
-            // point p
-
-            // calculate plane B normal (vertical to xy plane)
-            Vector_3 plane_b_normal(0, 0, 1);
-
-            // calculate plane C normal (perpendicular to plane A and plane B)
-            // plane C normal will be in xy plane
-            Vector_3 plane_c_normal = CGAL::cross_product(plane_normal, plane_b_normal);
-
-            // normalize plane C normal
-            if (plane_c_normal.squared_length() < 1e-10) {
-                // if plane A is almost horizontal, skip this point
-                continue;
-            }
-            plane_c_normal = plane_c_normal / std::sqrt(plane_c_normal.squared_length());
-
-            // plane C passes through point p, and its normal is plane_c_normal
-            // plane C equation: plane_c_normal.x*(x-point.x()) + plane_c_normal.y*(y-point.y()) +
-            // plane_c_normal.z*(z-point.z()) = 0
-
-            // calculate intersection direction between plane C and plane A (this is a direction
-            // vector)
-            Vector_3 intersection_direction = CGAL::cross_product(plane_normal, plane_c_normal);
-            intersection_direction =
-                intersection_direction / std::sqrt(intersection_direction.squared_length());
-
-            // now need to find the intersection point between this intersection line and plane
-            // B, this is the projected point p1 plane B equation: z = point.z()
-
-            // find a point on the intersection line between plane A and plane C
-            // solve the linear equation system to find this point
-            // point p is on plane C, so moving along intersection_direction from point p
-            // will keep us on plane C we need to find a parameter t, so that point p +
-            // t*intersection_direction is on plane A
-
-            double t =
-                -(plane.a() * point.x() + plane.b() * point.y() + plane.c() * point.z() +
-                  plane.d()) /
-                (plane.a() * intersection_direction.x() + plane.b() * intersection_direction.y() +
-                 plane.c() * intersection_direction.z());
-
-            Point_3 intersection_point = Point_3(point.x() + t * intersection_direction.x(),
-                                                 point.y() + t * intersection_direction.y(),
-                                                 point.z() + t * intersection_direction.z());
-
-            // finally, need to find the intersection point between the z = point.z() plane and
-            // this line if intersection_direction.z is close to 0, we cannot solve it
-            if (std::abs(intersection_direction.z()) < 1e-10) {
-                // if the intersection line is almost parallel to xy plane, we can directly use
-                // intersection_point
-                if (std::abs(intersection_point.z() - point.z()) > distance_threshold) {
-                    continue;  // if the z difference is too large, skip
-                }
-
-                // force z coordinate to be the original point's z coordinate
-                Point_3 projected_point =
-                    Point_3(intersection_point.x(), intersection_point.y(), point.z());
-
-                // calculate horizontal distance between projected point and original point
-                double horizontal_distance =
-                    std::sqrt(std::pow(point.x() - projected_point.x(), 2) +
-                              std::pow(point.y() - projected_point.y(), 2));
-
-                if (horizontal_distance <= distance_threshold) {
-                    // calculate 2D coordinates in plane coordinate system
-                    Vector_3 v = projected_point - origin;
-                    double x_2d = v * x_axis;
-                    double y_2d = v * y_axis;
-
-                    Ransac_2d::Point point_2d;
-                    point_2d.x = x_2d;
-                    point_2d.y = y_2d;
-
-                    result.projected_points.push_back(projected_point);
-                    result.points_2d.push_back(point_2d);
-                    result.original_indices.push_back(i);
-                }
-                continue;
-            }
-
-            // calculate parameter s so that intersection_point + s*intersection_direction has z
-            // coordinate equal to point.z()
-            double s = (point.z() - intersection_point.z()) / intersection_direction.z();
-
-            // calculate the final projected point
-            Point_3 projected_point =
-                Point_3(intersection_point.x() + s * intersection_direction.x(),
-                        intersection_point.y() + s * intersection_direction.y(),
-                        point.z()  // ensure z coordinate is kept
+            // calculate projected point
+            Point_3 projected_point;
+            if (is_near_horizontal || is_near_vertical) {
+                projected_point = plane.projection(point);
+            } else {
+                // for other cases, project point onto the plane but keep z-coordinate constant
+                Vector_3 v = point - origin;
+                double t = -(v * plane_normal) / (plane_normal * plane_normal);
+                projected_point = Point_3(
+                    point.x() + t * plane_normal.x(),
+                    point.y() + t * plane_normal.y(),
+                    point.z() + t * plane_normal.z()
                 );
-
-            // calculate horizontal distance between projected point and original point (only
-            // consider xy plane)
-            double horizontal_distance = std::sqrt(std::pow(point.x() - projected_point.x(), 2) +
-                                                   std::pow(point.y() - projected_point.y(), 2));
-
-            // filter points based on distance threshold
-            if (horizontal_distance <= distance_threshold) {
-                // calculate 2D coordinates in plane coordinate system
-                Vector_3 v = projected_point - origin;
-                double x_2d = v * x_axis;  // dot product projection to x axis
-                double y_2d = v * y_axis;  // dot product projection to y axis
-
-                Ransac_2d::Point point_2d;
-                point_2d.x = x_2d;
-                point_2d.y = y_2d;
-
-                result.projected_points.push_back(projected_point);
-                result.points_2d.push_back(point_2d);
-                result.original_indices.push_back(i);
             }
+
+            // calculate euclidean distance between original point and projected point
+            double euclidean_distance = std::sqrt(
+                std::pow(point.x() - projected_point.x(), 2) +
+                std::pow(point.y() - projected_point.y(), 2) +
+                std::pow(point.z() - projected_point.z(), 2)
+            );
+            
+            if (euclidean_distance > distance_threshold) {
+                continue;
+            }
+
+            // calculate 2d coordinates
+            auto p2d = plane.to_2d(projected_point);
+            Ransac_2d::Point point_2d;
+            point_2d.x = p2d.x();
+            point_2d.y = p2d.y();
+
+            result.projected_points.push_back(projected_point);
+            result.points_2d.push_back(point_2d);
+            result.original_indices.push_back(i);
         }
 
         return result;
@@ -634,6 +547,119 @@ class Ransac_3d {
     }
 };
 
+// project point cloud to principal plane using PCA
+static Projected_points_result project_to_principal_plane(
+    const std::vector<Point_3>& points,
+    double distance_threshold = 0.15) {
+    Projected_points_result result;
+    
+    if (points.empty()) {
+        return result;
+    }
+
+    // compute mean point
+    Point_3 mean(0, 0, 0);
+    for (const auto& p : points) {
+        mean = Point_3(mean.x() + p.x(), mean.y() + p.y(), mean.z() + p.z());
+    }
+    mean = Point_3(mean.x() / points.size(), mean.y() / points.size(), mean.z() / points.size());
+
+    // compute covariance matrix
+    Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+    for (const auto& p : points) {
+        Eigen::Vector3d v(p.x() - mean.x(), p.y() - mean.y(), p.z() - mean.z());
+        cov += v * v.transpose();
+    }
+    cov /= points.size();
+
+    // eigenvalue decomposition
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(cov);
+    
+    // 获取特征值和特征向量
+    Eigen::Vector3d eigenvalues = solver.eigenvalues();
+    Eigen::Matrix3d eigenvectors = solver.eigenvectors();
+    
+    // 按特征值大小排序
+    std::vector<size_t> sorted_indices(3);
+    std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
+    std::sort(sorted_indices.begin(), sorted_indices.end(),
+              [&eigenvalues](size_t i1, size_t i2) { return eigenvalues[i1] > eigenvalues[i2]; });
+    
+    // 使用前两个最大特征值对应的特征向量作为投影平面的基向量
+    Eigen::Vector3d x_eigen = eigenvectors.col(sorted_indices[0]);  // first principal component
+    Eigen::Vector3d y_eigen = eigenvectors.col(sorted_indices[1]);  // second principal component
+    Eigen::Vector3d normal = eigenvectors.col(sorted_indices[2]);   // third principal component (depth)
+    
+    // 确保是右手坐标系
+    Eigen::Vector3d cross_product = x_eigen.cross(y_eigen);
+    if (cross_product.dot(normal) < 0) {
+        y_eigen = -y_eigen;
+    }
+    
+    // convert Eigen vectors to CGAL vectors
+    Vector_3 x_axis(x_eigen.x(), x_eigen.y(), x_eigen.z());
+    Vector_3 y_axis(y_eigen.x(), y_eigen.y(), y_eigen.z());
+    Vector_3 normal_vector(normal.x(), normal.y(), normal.z());
+    
+    // normalize the vectors
+    x_axis = x_axis / std::sqrt(x_axis.squared_length());
+    y_axis = y_axis / std::sqrt(y_axis.squared_length());
+    normal_vector = normal_vector / std::sqrt(normal_vector.squared_length());
+    
+    // create plane using normal and mean point
+    result.plane = Plane_3(Point_3(mean.x(), mean.y(), mean.z()), normal_vector);
+
+    // store coordinate system
+    result.origin = Point_3(mean.x(), mean.y(), mean.z());
+    result.x_axis = x_axis;
+    result.y_axis = y_axis;
+
+    // 计算所有点的深度值
+    std::vector<double> depth_values;
+    for (const auto& p : points) {
+        Eigen::Vector3d v(p.x() - mean.x(), p.y() - mean.y(), p.z() - mean.z());
+        depth_values.push_back(v.dot(normal));
+    }
+    
+    // 计算深度阈值
+    double max_depth = *std::max_element(depth_values.begin(), depth_values.end());
+    double depth_thres = distance_threshold * max_depth;
+
+    // project points to plane
+    for (size_t i = 0; i < points.size(); ++i) {
+        const Point_3& point = points[i];
+        
+        // 根据深度值过滤点
+        if (std::abs(depth_values[i]) > depth_thres) {
+            continue;
+        }
+        
+        // 计算点相对于中心点的偏移
+        Eigen::Vector3d v(point.x() - mean.x(), point.y() - mean.y(), point.z() - mean.z());
+        
+        // 直接投影到主方向
+        double x_proj = v.dot(x_eigen);
+        double y_proj = v.dot(y_eigen);
+        
+        // 计算投影点
+        Point_3 projected_point(
+            mean.x() + x_proj * x_eigen.x() + y_proj * y_eigen.x(),
+            mean.y() + x_proj * x_eigen.y() + y_proj * y_eigen.y(),
+            mean.z() + x_proj * x_eigen.z() + y_proj * y_eigen.z()
+        );
+
+        // 计算2D坐标
+        Ransac_2d::Point point_2d;
+        point_2d.x = x_proj;
+        point_2d.y = y_proj;
+
+        result.projected_points.push_back(projected_point);
+        result.points_2d.push_back(point_2d);
+        result.original_indices.push_back(i);
+    }
+
+    return result;
+}
 }  // namespace custom_ransac
 
 #endif  // CUSTOM_RANSAC_H

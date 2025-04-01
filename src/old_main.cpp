@@ -1147,3 +1147,109 @@ bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
 
     return true;
 }
+
+bool run_pca_based_ransac(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+
+    // initialize rerun logger
+    const auto rr = rerun::RecordingStream("PCA-based RANSAC logger");
+    rr.spawn().exit_on_failure();
+
+    // project points to principal plane using PCA
+    std::vector<custom_ransac::Point_3> custom_ransac_points;
+    for (const auto& v : cloud->vertices()) {
+        custom_ransac::Point_3 p(points[v].x, points[v].y, points[v].z);
+        custom_ransac_points.push_back(p);
+    }
+    auto pca_result = custom_ransac::project_to_principal_plane(custom_ransac_points, 100);
+
+    // log projected 2d points to rerun
+    std::vector<rerun::Position2D> projected_points;
+    for (const auto& point : pca_result.points_2d) {
+        projected_points.push_back(rerun::Position2D{static_cast<float>(point.x), static_cast<float>(point.y)});
+    }
+    rr.log("projected_points", rerun::Points2D(projected_points).with_radii({0.1f}));
+
+    // perform 2d ransac line segment detection
+    custom_ransac::Ransac_2d ransac_2d;
+    custom_ransac::Ransac_2d::Parameters params;
+    params.max_iterations = 10000;
+    params.min_inliers = 5;
+    params.min_length = 0.1;
+    params.max_length = 1e6;
+    params.tolerance = 0.05;
+    params.split_threshold = 1.0;
+    std::vector<custom_ransac::Ransac_2d::Line> lines = ransac_2d.detect(pca_result.points_2d, params);
+
+    // log lines to rerun
+    std::vector<rerun::Collection<rerun::Vec2D>> lines2d;
+    for (const auto& line : lines) {
+        rerun::Collection<rerun::Vec2D> strip = {
+            {static_cast<float>(line.start.x), static_cast<float>(line.start.y)},
+            {static_cast<float>(line.end.x), static_cast<float>(line.end.y)}
+        };
+        lines2d.push_back(strip);
+    }
+    rr.log("lines", rerun::LineStrips2D(lines2d).with_radii({0.1f}));
+
+    // perform CGAL 2D QP regularization
+    std::vector<Segment_2> segments2D;
+    const FT max_angle_2 = FT(5);
+    const FT max_offset_2 = FT(0.15);
+
+    for (const auto& line : lines) {
+        Kernel::Point_2 p1(line.start.x, line.start.y);
+        Kernel::Point_2 p2(line.end.x, line.end.y);
+        Segment_2 seg = Segment_2(p1, p2);
+        segments2D.push_back(seg);
+    }
+
+    // create QP solver, neighbor query and angle-based regularization model
+    Quadratic_program qp_angles;
+    SR_neighbor_query sr_neighbor_query(segments2D);
+    Angle_regularization angle_regularization(segments2D,
+                                                CGAL::parameters::maximum_angle(max_angle_2));
+
+    // regularize
+    Quadratic_angle_regularizer qp_angle_regularizer(segments2D, sr_neighbor_query,
+                                                        angle_regularization, qp_angles);
+    qp_angle_regularizer.regularize();
+
+    // offset regularization
+    // get groups of parallel segments after angle regularization
+    std::vector<std::vector<size_t>> pgroups;
+    angle_regularization.parallel_groups(std::back_inserter(pgroups));
+
+    // create qp solver and offset-based regularization model
+    Quadratic_program qp_offsets;
+    Offset_regularization offset_regularization(
+        segments2D, CGAL::parameters::maximum_offset(max_offset_2));
+
+    // add each group of parallel segments with at least 2 segments
+    sr_neighbor_query.clear();
+    for (const auto& pgroup : pgroups) {
+        sr_neighbor_query.add_group(pgroup);
+        offset_regularization.add_group(pgroup);
+    }
+
+    // regularize
+    Quadratic_offset_regularizer qp_offset_regularizer(segments2D, sr_neighbor_query,
+                                                        offset_regularization, qp_offsets);
+    qp_offset_regularizer.regularize();
+
+    // log regularized segments to rerun
+    std::vector<rerun::Collection<rerun::Vec2D>> regularized_lines;
+    for (const auto& seg : segments2D) {
+        rerun::Collection<rerun::Vec2D> strip = {
+            {static_cast<float>(seg.source().x()), static_cast<float>(seg.source().y())},
+            {static_cast<float>(seg.target().x()), static_cast<float>(seg.target().y())}
+        };
+        regularized_lines.push_back(strip);
+    }
+    rr.log("regularized_lines", rerun::LineStrips2D(regularized_lines).with_radii({0.1f}));
+
+    return true;
+}

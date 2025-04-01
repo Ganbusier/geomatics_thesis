@@ -67,39 +67,41 @@ def main(input_model: str, detect_mode: int = 0) -> None:
     if detect_mode == 0:
         start_time = time.time()
 
-        # ransac = Ransac2D()
-        # ransac_lines = ransac.detect_2(
-        #     points=points_for_detection,
-        #     max_iterations=200,
-        #     min_inliers=5,
-        #     tolerance=0.05,
-        #     split_distance_threshold=1.0,
-        # )
-
-        ransac = RansacPlane3D()
-        ransac_planes = ransac.detect_planes(
-            points=points_for_detection3D,
-            distance_threshold=0.1,
-            min_inliers=50,
-            confidence=0.99,
+        ransac = Ransac2D()
+        ransac_lines = ransac.detect_2(
+            points=points_for_detection,
+            max_iterations=200,
+            min_inliers=5,
+            tolerance=0.05,
+            split_distance_threshold=1.0,
         )
+
+        # ransac = RansacPlane3D()
+        # ransac_planes = ransac.detect_planes(
+        #     points=points_for_detection3D,
+        #     distance_threshold=0.1,
+        #     min_inliers=50,
+        #     confidence=0.99,
+        # )
 
         end_time = time.time()
         print(f"Total process time: {end_time - start_time:.4f} seconds")
 
-        # rerun_lines = []
-        # for line in ransac_lines:
-        #     line_start = (line.start.x, line.start.y)
-        #     line_end = (line.end.x, line.end.y)
-        #     rerun_lines.append((line_start, line_end))
+        rerun_lines = []
+        for line in ransac_lines:
+            line_start = (line.start.x, line.start.y)
+            line_end = (line.end.x, line.end.y)
+            rerun_lines.append((line_start, line_end))
 
         rr.init("RANSAC logger", spawn=True)
-        for i in range(len(ransac_planes)):
-            plane = ransac_planes[i]
-            rr_points = [points[idx] for idx in plane.inlier_indices]
-            rr.log(f"points{i}", rr.Points3D(rr_points, radii=0.1))
-        # rr.log("points2D", rr.Points2D(points_2d, radii=0.1))
-        # rr.log("lines2D", rr.LineStrips2D(rerun_lines, radii=0.2))
+
+        # for i in range(len(ransac_planes)):
+        #     plane = ransac_planes[i]
+        #     rr_points = [points[idx] for idx in plane.inlier_indices]
+        #     rr.log(f"points{i}", rr.Points3D(rr_points, radii=0.1))
+
+        rr.log("points2D", rr.Points2D(points_2d, radii=0.1))
+        rr.log("lines2D", rr.LineStrips2D(rerun_lines, radii=0.2))
 
     # perform 2D hough transform
     elif detect_mode == 1:
@@ -133,4 +135,4 @@ if __name__ == "__main__":
     input_pylon = "./resources/2024_C_44HZ1_14_pylon.ply"
     input_line = "./resources/2024_C_44HZ1_14_line.ply"
 
-    main(input_pylon, detect_mode=1)
+    main(input_pylon, detect_mode=0)

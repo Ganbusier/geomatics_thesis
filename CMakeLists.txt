@@ -25,6 +25,8 @@ set(OSQP_LIBRARIES "C:/Program Files (x86)/osqp/lib/osqp.lib")
 message(STATUS "OSQP_INCLUDE_DIR: ${OSQP_INCLUDE_DIR}")
 message(STATUS "OSQP_LIBRARY: ${OSQP_LIBRARIES}")
 
+# gco
+add_subdirectory(${CMAKE_SOURCE_DIR}/3rd_party/gco)
 
 # CGAL
 set(CGAL_DIR ${CMAKE_SOURCE_DIR}/3rd_party/CGAL-6.0.1)
@@ -58,8 +60,10 @@ include_directories( ${CMAKE_SOURCE_DIR}/include )
 # Creating entries for all C++ files from src directory
 FILE(GLOB SRC_FILES src/main.cpp)
 add_executable(${PROJECT_NAME} ${SRC_FILES})
+
 target_link_libraries(${PROJECT_NAME}
                       PUBLIC
+                      gco
                       CGAL::CGAL 
                       CGAL::OSQP_support
                       easy3d::viewer 
@@ -70,6 +74,10 @@ target_link_libraries(${PROJECT_NAME}
                       
                       PRIVATE
                       rerun_sdk)
+
+target_include_directories(geomatics_thesis 
+                           PRIVATE
+                           ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/gco)
 # ##########################################################
 
 
