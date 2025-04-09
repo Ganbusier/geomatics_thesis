@@ -269,7 +269,7 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
         auto source_pos = graph->position(source);
         auto target_pos = graph->position(target);
 
-        // extend the edge endpoints by twice of the mean spacing
+        // extend the edge endpoints use mean spacing
         vec3 direction = (target_pos - source_pos).normalize();
         vec3 extended_source_pos = source_pos - extension_factor * mean_spacing * direction;
         vec3 extended_target_pos = target_pos + extension_factor * mean_spacing * direction;
@@ -348,13 +348,13 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
 
     LOG(INFO) << "Computing edge length costs...";
 
+    float sigma_squared = 0.5f;
     for (const auto& e : graph->edges()) {
         auto source = graph->source(e);
         auto target = graph->target(e);
         auto source_pos = graph->position(source);
         auto target_pos = graph->position(target);
         float edge_length = (target_pos - source_pos).length();
-        float sigma_squared = 0.5f;
         float edge_length_cost = 1.0f - exp(-edge_length * edge_length / (2.0f * sigma_squared));
         edge_length_costs[e.idx()] = static_cast<int>(floor(edge_length_cost * 100));
     }
@@ -459,7 +459,7 @@ std::vector<SmoothnessCost> compute_smoothness_costs(Graph* graph) {
                     cosine_value * cosine_value;  // parallel=1, perpendicular=0
 
                 // use gaussian function to keep continuity
-                float sigma_squared = 0.05f;
+                float sigma_squared = 0.1f;
                 float float_angle_cost = exp(-parallel_measure / (2.0f * sigma_squared));
                 int angle_cost = static_cast<int>(floor(float_angle_cost * 100));
 

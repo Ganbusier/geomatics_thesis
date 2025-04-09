@@ -121,7 +121,7 @@ bool run_gco(Viewer* viewer, Model* model) {
     easy3d::Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
 
     // construct dual graph
-    easy3d::Graph* dual_graph = construct_dual_graph(global_graph);
+    // easy3d::Graph* dual_graph = construct_dual_graph(global_graph);
 
     // ================================= run GCO =================================
     int num_labels = 2;  // 2 labels: 0 and 1 --> 0: remove, 1: preserve
@@ -129,28 +129,48 @@ bool run_gco(Viewer* viewer, Model* model) {
         new GCoptimizationGeneralGraph(global_graph->n_edges(), num_labels);
 
     // set data costs
-    std::vector<int> data_costs =
-        compute_data_costs(global_graph, cloud, 2.0f, 1.0f, 0.1f);  // this is the cost to preserve an edge
+    std::vector<int> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
+                                                     0.1f);  // this is the cost to preserve an edge
+    int max_data_cost = *std::max_element(data_costs.begin(), data_costs.end());
     for (size_t i = 0; i < global_graph->n_edges(); ++i) {
         // the cost to remove an edge
-        gc->setDataCost(i, 0, 5 * (100 - data_costs[i]));
+        gc->setDataCost(i, 0, max_data_cost - data_costs[i]);
         // the cost to preserve an edge
-        gc->setDataCost(i, 1, 5 * data_costs[i]);
+        gc->setDataCost(i, 1, data_costs[i]);
     }
 
     // set neighbors and smoothness costs
-    // smoothness_cost range: [0, 100]
     std::vector<SmoothnessCost> smoothness_costs = compute_smoothness_costs(global_graph);
     LOG(INFO) << "Smoothness costs size: " << smoothness_costs.size();
-    for (const auto& sc : smoothness_costs) {
-        gc->setNeighbors(sc.edge1_idx, sc.edge2_idx, sc.smoothness_cost);
-    }
-    int V[4] = {2, 1, 2, 1};  // V[label1 + num_label*label2] --> V(0,0), V(1,0), V(0,1), V(1,1)
-    gc->setSmoothCost(V);
+    SmoothnessCost max_sc =
+        *std::max_element(smoothness_costs.begin(), smoothness_costs.end(),
+                          [](const SmoothnessCost& a, const SmoothnessCost& b) {
+                              return a.smoothness_cost < b.smoothness_cost;
+                          });
+    int max_smoothness_cost = max_sc.smoothness_cost;
 
-    LOG(INFO) << "Before optimization, energy: " << gc->compute_energy();
+    // compute neighbor-pair weights, lower the cost, higher the weight
+    int* weights = new int[smoothness_costs.size()];
+    for (size_t i = 0; i < smoothness_costs.size(); ++i) {
+        weights[i] = max_smoothness_cost - smoothness_costs[i].smoothness_cost;
+    }
+    int count = 0;
+    for (const auto& sc : smoothness_costs) {
+        gc->setNeighbors(sc.edge1_idx, sc.edge2_idx, weights[count]);
+        count++;
+    }
+    // heavily penalize different labels for low-angle-diff neighbor-pairs
+    int V[4] = {0, 1, 1, 0};  // V[label1 + num_label*label2] --> V(0,0), V(1,0), V(0,1), V(1,1)
+                              // must satisfy: V(0, 0) + V(1, 1) <= V(0,1) + V(1,0)
+    gc->setSmoothCost(V); // initially the smooth cost will be: sum(w_i * V(0,0))
+
+    LOG(INFO) << "Before optimization, energy: " << gc->compute_energy()
+              << ", data cost: " << gc->giveDataEnergy()
+              << ", smoothness cost: " << gc->giveSmoothEnergy();
     gc->expansion(99);
-    LOG(INFO) << "After optimization, energy: " << gc->compute_energy();
+    LOG(INFO) << "After optimization, energy: " << gc->compute_energy()
+              << ", data cost: " << gc->giveDataEnergy()
+              << ", smoothness cost: " << gc->giveSmoothEnergy();
 
     // log preserved and removed edges to rerun
     const auto rr = rerun::RecordingStream("GCO Approach logger");
@@ -164,7 +184,7 @@ bool run_gco(Viewer* viewer, Model* model) {
     }
     rr.log("points", rerun::Points3D(rr_points));
 
-    // log edges
+    // log preserved and removed edges seperately
     std::vector<rerun::Collection<rerun::Vec3D>> preserved_edges;
     std::vector<rerun::Collection<rerun::Vec3D>> removed_edges;
     for (const auto& e : global_graph->edges()) {
@@ -187,8 +207,14 @@ bool run_gco(Viewer* viewer, Model* model) {
 
     LOG(INFO) << "Preserved edges: " << preserved_edges.size();
     LOG(INFO) << "Removed edges: " << removed_edges.size();
-    rr.log("preserved_edges", rerun::LineStrips3D(preserved_edges).with_radii({0.01f}));
+    rr.log("preserved_edges", rerun::LineStrips3D(preserved_edges).with_radii({0.02f}));
     rr.log("removed_edges", rerun::LineStrips3D(removed_edges).with_radii({0.01f}));
 
+    delete gc;
+    delete knn_graph;
+    delete delaunay_graph;
+    delete global_graph;
+    delete [] weights;
+    
     return true;
 }
