@@ -791,6 +791,7 @@ namespace kdtree  {
 				vc = point->pos - g_queryLine[0];
 				sqrDist = vc.getSquaredLength();
 				sqrDistLine = Vector3D::dotProduct( vc, g_queryLineDir );
+				if ( sqrDistLine < 0 ) continue;
 				sqrDistLine *= sqrDistLine;
 				if( sqrDistLine > g_queryMaxSqrRange ) continue;
 				sqrDistVert = sqrDist - sqrDistLine;
