@@ -33,6 +33,7 @@ std::vector<Drawable*> drawables;  // store drawables added to the viewer
 // function declarations
 bool offset_xyz(Viewer* viewer, Model* model);
 bool edge_length_test(Viewer* viewer, Model* model);  // test edge length costs
+bool testDataCost(Viewer* viewer, Model* model);  // test data costs
 bool run_gco(Viewer* viewer, Model* model);
 
 int main(int argc, char** argv) {
@@ -58,11 +59,13 @@ int main(int argc, char** argv) {
 
     // set usage instructions
     viewer.set_usage("'Ctrl + g': run gco approach\n"
-                     "'Ctrl + e': test edge length costs");
+                     "'Ctrl + e': test edge length costs\n"
+                    "'Ctrl + i': test data costs.");
 
     // bind functions to keys
     viewer.bind(run_gco, model, Viewer::KEY_G, Viewer::MODIF_CTRL);
     viewer.bind(edge_length_test, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
+    viewer.bind(testDataCost, model, Viewer::KEY_I, Viewer::MODIF_CTRL);
 
     // fit screen
     viewer.fit_screen();
@@ -227,6 +230,85 @@ bool edge_length_test(Viewer* viewer, Model* model) {
     rr.log("points", rerun::Points3D(rr_points).with_radii({0.05f}));
     rr.log("global graph edges", rerun::LineStrips3D(global_graph_edges).with_radii({0.02f}));
     rr.log("extended graph edges", rerun::LineStrips3D(extended_edges).with_radii({0.02f}));
+
+    delete knn_graph;
+    delete delaunay_graph;
+    delete global_graph;
+
+    return true;
+}
+
+bool testDataCost(Viewer* viewer, Model* model) {
+    if (!viewer ||!model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model); 
+    auto points_property = cloud->get_vertex_property<vec3>("v:point");
+
+    // get points
+    std::vector<vec3> points;
+    for (const auto& v : cloud->vertices()) {
+        points.push_back(points_property[v]);
+    }
+
+    // build knn graph
+    int k_neighbors = 10;
+    easy3d::Graph* knn_graph = build_knn_graph(cloud, k_neighbors);
+
+    // build delaunay graph
+    easy3d::Graph* delaunay_graph = build_delaunay_graph(cloud);
+
+    // combine graphs
+    const float max_edge_length = 2.0f;
+    easy3d::Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
+
+    std::vector<int> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
+                                                     1.0f);  // this is the cost to preserve an edge
+
+    const auto rr = rerun::RecordingStream("Data Cost Test Logger");
+    rr.spawn().exit_on_failure();
+
+    // log points
+    std::vector<rerun::Position3D> rr_points;
+    for (const auto& p : points) {
+        rr_points.push_back(
+            {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)});
+    }
+
+    // log global graph edges based on their data costs
+    std::vector<rerun::Collection<rerun::Vec3D>> edges_less_than_10;
+    std::vector<rerun::Collection<rerun::Vec3D>> edges_10_to_30;
+    std::vector<rerun::Collection<rerun::Vec3D>> edges_30_to_50;
+    std::vector<rerun::Collection<rerun::Vec3D>> edges_more_than_50;
+    int iter = 0;
+    for (const auto& e : global_graph->edges()) {
+        auto source = global_graph->source(e);
+        auto target = global_graph->target(e);
+        auto source_pos = global_graph->position(source); 
+        auto target_pos = global_graph->position(target);
+        rerun::Collection<rerun::Vec3D> edge = {
+            {static_cast<float>(source_pos.x), static_cast<float>(source_pos.y), static_cast<float>(source_pos.z)},
+            {static_cast<float>(target_pos.x), static_cast<float>(target_pos.y), static_cast<float>(target_pos.z)}
+        };
+        if (data_costs[iter] <= 10) {
+            edges_less_than_10.push_back(edge); 
+        }
+        else if (data_costs[iter] <= 30) {
+            edges_10_to_30.push_back(edge); 
+        }
+        else if (data_costs[iter] <= 50) {
+            edges_30_to_50.push_back(edge); 
+        }
+        else {
+            edges_more_than_50.push_back(edge); 
+        }
+        iter++;
+    }
+
+    rr.log("points", rerun::Points3D(rr_points).with_radii({0.05f}));
+    rr.log("data cost <=10", rerun::LineStrips3D(edges_less_than_10).with_radii({0.02f}));
+    rr.log("10 < data cost <= 30", rerun::LineStrips3D(edges_10_to_30).with_radii({0.02f}));
+    rr.log("30 < data cost <= 50", rerun::LineStrips3D(edges_30_to_50).with_radii({0.02f}));
+    rr.log("50 < data cost", rerun::LineStrips3D(edges_more_than_50).with_radii({0.02f}));
 
     delete knn_graph;
     delete delaunay_graph;
