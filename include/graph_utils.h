@@ -370,7 +370,7 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
 
         auto final_source_pos = source_pos;
         auto final_target_pos = target_pos;
-        float search_radius = 0.1f;
+        float search_radius = 2.0f * mean_spacing;
         float scale_factor = 10.0f;
 
         bool process_source = true;
@@ -384,12 +384,14 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
             auto next_target_pos = current_target_pos + scale_factor * mean_spacing * direction;
 
             if (process_source) {
+                // tree.find_points_in_range(next_source_pos, search_radius * search_radius, source_inliers);
                 tree.find_points_in_cylinder(current_source_pos, next_source_pos, search_radius, source_inliers);
-                process_source = source_inliers.size() > 2;
+                process_source = source_inliers.size() > 1;
             }
             if (process_target) {
+                // tree.find_points_in_range(next_target_pos, search_radius * search_radius, target_inliers);
                 tree.find_points_in_cylinder(current_target_pos, next_target_pos, search_radius, target_inliers);
-                process_target = target_inliers.size() > 2;
+                process_target = target_inliers.size() > 1;
             }
             if (!process_source && !process_target) break;
 

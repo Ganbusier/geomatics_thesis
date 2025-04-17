@@ -28,8 +28,6 @@ using namespace easy3d;
 using namespace rerun::demo;
 using namespace graph_utils;
 
-std::vector<Drawable*> drawables;  // store drawables added to the viewer
-
 // function declarations
 bool offset_xyz(Viewer* viewer, Model* model);
 bool edge_length_test(Viewer* viewer, Model* model);  // test edge length costs
@@ -138,16 +136,16 @@ bool edge_length_test(Viewer* viewer, Model* model) {
     }
 
     // log global graph edges to rerun
-    std::vector<rerun::Collection<rerun::Vec3D>> global_graph_edges;
+    std::vector<rerun::LineStrip3D> global_graph_edges;
     for (const auto& e : global_graph->edges()) {
         auto source = global_graph->source(e);
         auto target = global_graph->target(e);
         auto source_pos = global_graph->position(source); 
         auto target_pos = global_graph->position(target);
-        rerun::Collection<rerun::Vec3D> global_graph_edge = {
+        rerun::LineStrip3D global_graph_edge({
             {static_cast<float>(source_pos.x), static_cast<float>(source_pos.y), static_cast<float>(source_pos.z)},
             {static_cast<float>(target_pos.x), static_cast<float>(target_pos.y), static_cast<float>(target_pos.z)}
-        };
+        });
         global_graph_edges.push_back(global_graph_edge);
     }
 
@@ -186,10 +184,11 @@ bool edge_length_test(Viewer* viewer, Model* model) {
         auto source_pos = global_graph->position(source);
         auto target_pos = global_graph->position(target);
         auto direction = (target_pos - source_pos).normalize();
+        auto length = (target_pos - source_pos).length();
 
         auto final_source_pos = source_pos;
         auto final_target_pos = target_pos;
-        float search_radius = 0.1f;
+        float search_radius = 2.0f * mean_spacing;
         float scale_factor = 10.0f;
 
         bool process_source = true;
@@ -203,12 +202,14 @@ bool edge_length_test(Viewer* viewer, Model* model) {
             auto next_target_pos = current_target_pos + scale_factor * mean_spacing * direction;
 
             if (process_source) {
+                // tree.find_points_in_range(next_source_pos, search_radius * search_radius, source_inliers);
                 tree.find_points_in_cylinder(current_source_pos, next_source_pos, search_radius, source_inliers);
-                process_source = source_inliers.size() > 2;
+                process_source = source_inliers.size() > 1;
             }
             if (process_target) {
+                // tree.find_points_in_range(next_target_pos, search_radius * search_radius, target_inliers);
                 tree.find_points_in_cylinder(current_target_pos, next_target_pos, search_radius, target_inliers);
-                process_target = target_inliers.size() > 2;
+                process_target = target_inliers.size() > 1;
             }
             if (!process_source && !process_target) break;
 
@@ -220,16 +221,19 @@ bool edge_length_test(Viewer* viewer, Model* model) {
             }
         } while (process_source || process_target);
 
-        rerun::Collection<rerun::Vec3D> extended_edge = {
-            {static_cast<float>(final_source_pos.x), static_cast<float>(final_source_pos.y), static_cast<float>(final_source_pos.z)},
-            {static_cast<float>(final_target_pos.x), static_cast<float>(final_target_pos.y), static_cast<float>(final_target_pos.z)}
-        };
-        extended_edges.push_back(extended_edge);
+        float final_length = (final_target_pos - final_source_pos).length();
+        if (final_length > length) {
+            rerun::Collection<rerun::Vec3D> extended_edge = {
+                {static_cast<float>(final_source_pos.x), static_cast<float>(final_source_pos.y), static_cast<float>(final_source_pos.z)},
+                {static_cast<float>(final_target_pos.x), static_cast<float>(final_target_pos.y), static_cast<float>(final_target_pos.z)}
+            };
+            extended_edges.push_back(extended_edge);
+        }
     }
 
     rr.log("points", rerun::Points3D(rr_points).with_radii({0.05f}));
     rr.log("global graph edges", rerun::LineStrips3D(global_graph_edges).with_radii({0.02f}));
-    rr.log("extended graph edges", rerun::LineStrips3D(extended_edges).with_radii({0.02f}));
+    rr.log("extended_graph_edges", rerun::LineStrips3D(extended_edges).with_radii({0.02f}));
 
     delete knn_graph;
     delete delaunay_graph;
@@ -262,7 +266,7 @@ bool testDataCost(Viewer* viewer, Model* model) {
     easy3d::Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
 
     std::vector<int> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
-                                                     1.0f);  // this is the cost to preserve an edge
+                                                     0.0f);  // this is the cost to preserve an edge
 
     const auto rr = rerun::RecordingStream("Data Cost Test Logger");
     rr.spawn().exit_on_failure();
@@ -350,7 +354,7 @@ bool run_gco(Viewer* viewer, Model* model) {
 
     // set data costs
     std::vector<int> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
-                                                     1.0f);  // this is the cost to preserve an edge
+                                                     0.0f);  // this is the cost to preserve an edge
     int max_data_cost = *std::max_element(data_costs.begin(), data_costs.end());
     int data_cost_scale_factor = 30;
     for (size_t i = 0; i < global_graph->n_edges(); ++i) {
