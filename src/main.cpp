@@ -265,7 +265,7 @@ bool testDataCost(Viewer* viewer, Model* model) {
     const float max_edge_length = 2.0f;
     easy3d::Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
 
-    std::vector<int> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
+    std::vector<float> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
                                                      0.0f);  // this is the cost to preserve an edge
 
     const auto rr = rerun::RecordingStream("Data Cost Test Logger");
@@ -293,13 +293,13 @@ bool testDataCost(Viewer* viewer, Model* model) {
             {static_cast<float>(source_pos.x), static_cast<float>(source_pos.y), static_cast<float>(source_pos.z)},
             {static_cast<float>(target_pos.x), static_cast<float>(target_pos.y), static_cast<float>(target_pos.z)}
         };
-        if (data_costs[iter] <= 10) {
+        if (data_costs[iter] <= 0.1) {
             edges_less_than_10.push_back(edge); 
         }
-        else if (data_costs[iter] <= 30) {
+        else if (data_costs[iter] <= 0.3) {
             edges_10_to_30.push_back(edge); 
         }
-        else if (data_costs[iter] <= 50) {
+        else if (data_costs[iter] <= 0.5) {
             edges_30_to_50.push_back(edge); 
         }
         else {
@@ -351,17 +351,21 @@ bool run_gco(Viewer* viewer, Model* model) {
     int num_labels = 2;  // 2 labels: 0 and 1 --> 0: remove, 1: preserve
     GCoptimizationGeneralGraph* gc =
         new GCoptimizationGeneralGraph(global_graph->n_edges(), num_labels);
+    
+    int scale_factor = 100; // for both data costs and smoothness costs
+    float lambda = 1.0f; // control the weight of the smoothness costs
 
     // set data costs
-    std::vector<int> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
-                                                     0.0f);  // this is the cost to preserve an edge
-    int max_data_cost = *std::max_element(data_costs.begin(), data_costs.end());
-    int data_cost_scale_factor = 30;
+    std::vector<float> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
+                                                     1.0f);  // this is the cost to preserve an edge
     for (size_t i = 0; i < global_graph->n_edges(); ++i) {
+        // convert float to int with scale factor
+        int dc_preserved = static_cast<int>(data_costs[i] * scale_factor);
+        int dc_removed = scale_factor - dc_preserved;
         // the cost to remove an edge
-        gc->setDataCost(i, 0, data_cost_scale_factor * (max_data_cost - data_costs[i]));
+        gc->setDataCost(i, 0, scale_factor * dc_removed);
         // the cost to preserve an edge
-        gc->setDataCost(i, 1, data_cost_scale_factor * data_costs[i]);
+        gc->setDataCost(i, 1, scale_factor * dc_preserved);
     }
 
     // set neighbors and smoothness costs
@@ -370,7 +374,9 @@ bool run_gco(Viewer* viewer, Model* model) {
 
     // compute neighbor-pair weights, lower the cost, higher the weight
     for (const auto& sc : smoothness_costs) {
-        gc->setNeighbors(sc.edge1_idx, sc.edge2_idx, 100 - sc.smoothness_cost);
+        int sc_scaled = static_cast<int>(sc.smoothness_cost * scale_factor * lambda);
+        int neighbor_pair_weight = scale_factor - sc_scaled;
+        gc->setNeighbors(sc.edge1_idx, sc.edge2_idx, neighbor_pair_weight);
     }
     // heavily penalize different labels for low-angle-diff neighbor-pairs
     int V[4] = {0, 1, 1, 0};  // V[label1 + num_label*label2] --> V(0,0), V(1,0), V(0,1), V(1,1)

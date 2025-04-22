@@ -5,21 +5,46 @@ from collections import defaultdict
 import numpy as np
 from tqdm import tqdm
 import argparse
+import gc
 
 def laz_process(input_file: str, output_file: str):
-    filtered_points = []
+    filtered_chunks = []
+    chunk_size = 10000
 
     with laspy.open(input_file) as fh:
-        for points in tqdm(fh.chunk_iterator(100000), total= fh.header.point_count // 100000, desc="Processing points"):
-            coords = np.vstack((points.x, points.y, points.z)).T
-            intensity = points.intensity
-            classification = points.classification
+        total_chunks = (fh.header.point_count + chunk_size - 1) // chunk_size
+        
+        for points in tqdm(fh.chunk_iterator(chunk_size), 
+                          total=total_chunks,
+                          desc="Processing points"):
+            x = np.asarray(points.x, dtype=np.float32)
+            y = np.asarray(points.y, dtype=np.float32)
+            z = np.asarray(points.z, dtype=np.float32)
+            
+            mask = np.asarray(points.classification) == 14
+            
+            if np.any(mask):
+                filtered = np.column_stack([
+                    x[mask], y[mask], z[mask],
+                    np.asarray(points.intensity[mask], dtype=np.float32),
+                    np.asarray(points.classification[mask], dtype=np.uint8)
+                ])
+                filtered_chunks.append(filtered)
+            
+            del x, y, z, mask, points
+            gc.collect()
 
-            mask = classification == 14
-            filtered_points.extend(np.column_stack((coords[mask], intensity[mask], classification[mask])))
+    if not filtered_chunks:
+        print("警告：未找到分类代码14的点云数据")
+        return
 
-    filtered_points = np.array(filtered_points)
+    # 最终合并所有块
+    filtered_points = np.vstack(filtered_chunks)
+    
     num_points = len(filtered_points)
+    if len(filtered_points) == 0:
+        print("No points found with semantics class 14.")
+        return
     vertex = np.array(
         [(x, y, z, intensity, sem_class) for x, y, z, intensity, sem_class in filtered_points], 
         dtype=[("x", "f4"), ("y", "f4"), ("z", "f4"), ("intensity", "f4"), ("sem_class", "i4")]

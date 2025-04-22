@@ -213,7 +213,7 @@ Graph* construct_dual_graph(Graph* graph) {
 
 // method to compute data costs (the cost to preserve) for all edges in the original graph (nodes in
 // the dual graph)
-std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float extension_factor = 2.0f,
+std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float extension_factor = 2.0f,
                                     float inlier_search_radius = 1.0f,
                                     float inlier_prob_weight = 1.0f) {
     // get points
@@ -258,9 +258,9 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
 
     // initialize data costs, inliers probability cost and edge length cost with 1.0f which is the
     // maximum possible cost
-    std::vector<int> data_costs(graph->n_edges(), 100);
-    std::vector<int> inliers_probability_costs(graph->n_edges(), 100);
-    std::vector<int> edge_length_costs(graph->n_edges(), 100);
+    std::vector<float> data_costs(graph->n_edges(), 1.0f);
+    std::vector<float> inliers_probability_costs(graph->n_edges(), 1.0f);
+    std::vector<float> edge_length_costs(graph->n_edges(), 1.0f);
 
     // ================ Data Costs Computation: inliers probability costs ================
     // step 1: for each edge in the graph, extend its endpoints by the twice of the mean spacing
@@ -331,15 +331,14 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
         }
         // avoid division by zero
         float inliers_probability_term = (weight_sum > 0) ? weighted_sum / weight_sum : 0.0f;
-        inliers_probability_costs[e.idx()] =
-            static_cast<int>(floor((1.0f - inliers_probability_term) * 100));
+        inliers_probability_costs[e.idx()] = 1.0f - inliers_probability_term;
     }
     LOG(INFO) << "Inliers probability costs computed successfully.";
 
     // log max, min, and mean inliers probability cost
-    int max_inliers_probability_cost =
+    float max_inliers_probability_cost =
         *std::max_element(inliers_probability_costs.begin(), inliers_probability_costs.end());
-    int min_inliers_probability_cost =
+    float min_inliers_probability_cost =
         *std::min_element(inliers_probability_costs.begin(), inliers_probability_costs.end());
     float mean_inliers_probability_cost = 0.0f;
     for (const auto& cost : inliers_probability_costs) {
@@ -371,7 +370,7 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
         auto final_source_pos = source_pos;
         auto final_target_pos = target_pos;
         float search_radius = 2.0f * mean_spacing;
-        float scale_factor = 10.0f;
+        float scale_factor = 5.0f;
 
         bool process_source = true;
         bool process_target = true;
@@ -406,15 +405,15 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
         float final_edge_length = (final_target_pos - final_source_pos).length();
         float edge_length_cost = edge_length / final_edge_length;
         // float edge_length_cost = exp(-edge_length * edge_length / (2.0f * sigma_squared));
-        edge_length_costs[e.idx()] = static_cast<int>(floor(edge_length_cost * 100));
+        edge_length_costs[e.idx()] = edge_length_cost;
     }
 
     LOG(INFO) << "Edge length costs computed successfully.";
 
     // log max, min, and mean edge length cost
-    int max_edge_length_cost =
+    float max_edge_length_cost =
         *std::max_element(edge_length_costs.begin(), edge_length_costs.end());
-    int min_edge_length_cost =
+    float min_edge_length_cost =
         *std::min_element(edge_length_costs.begin(), edge_length_costs.end());
     float mean_edge_length_cost = 0.0f;
     for (const auto& cost : edge_length_costs) {
@@ -429,16 +428,13 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
     for (size_t i = 0; i < graph->n_edges(); ++i) {
         float w1 = inlier_prob_weight;
         float w2 = 1.0f - w1;
-        data_costs[i] =
-            static_cast<int>(floor(w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i]));
-        // int min_cost = std::min(inliers_probability_costs[i], edge_length_costs[i]);
-        // data_costs[i] = min_cost; 
+        data_costs[i] = w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i];
     }
     LOG(INFO) << "Final data costs computed successfully.";
 
     // log max, min, and mean data cost
-    int max_data_cost = *std::max_element(data_costs.begin(), data_costs.end());
-    int min_data_cost = *std::min_element(data_costs.begin(), data_costs.end());
+    float max_data_cost = *std::max_element(data_costs.begin(), data_costs.end());
+    float min_data_cost = *std::min_element(data_costs.begin(), data_costs.end());
     float mean_data_cost = 0.0f;
     for (const auto& cost : data_costs) {
         mean_data_cost += cost;
@@ -453,9 +449,7 @@ std::vector<int> compute_data_costs(Graph* graph, PointCloud* cloud, float exten
 struct SmoothnessCost {
     int edge1_idx;
     int edge2_idx;
-    int angle_cost = 100;
-    int distance_cost = 100;
-    int smoothness_cost = 100;
+    float smoothness_cost = 1.0f;
 };
 
 // method to compute smoothness costs for all edges in the original graph (nodes in the dual graph)
@@ -468,9 +462,7 @@ std::vector<SmoothnessCost> compute_smoothness_costs(Graph* graph) {
     // ============ Smoothness Costs Computation: angle costs and distance costs ================
     // step 1: for each edge in the graph, find its neighbors
     // step 2: for each neighbor, compute the angle cost using gaussian function
-    // step 3: for each neighbor, compute the distance cost using gaussian function
-    // step 4: compute the smoothness cost as the weighted sum of the angle cost and the distance
-    // cost step 5: store the result into SmoothnessCost struct
+    // step 3: store the result into SmoothnessCost struct
 
     for (const auto& e : graph->edges()) {
         auto source = graph->source(e);
@@ -505,31 +497,11 @@ std::vector<SmoothnessCost> compute_smoothness_costs(Graph* graph) {
                 cosine_value = std::max(-1.0f, std::min(1.0f, cosine_value));
 
                 // angle cost function: 1 - (cos(x))^10
-                float float_angle_cost = 1.0f - pow(cosine_value, 10.0f);
-                int angle_cost = static_cast<int>(floor(float_angle_cost * 100));
-
-                // // use the square of cosine value directly to compute the angle cost
-                // float parallel_measure =
-                //     cosine_value * cosine_value;  // parallel=1, perpendicular=0
-
-                // // use gaussian function to keep continuity
-                // float sigma_squared = 0.1f;
-                // float float_angle_cost = exp(-parallel_measure / (2.0f * sigma_squared));
-                // int angle_cost = static_cast<int>(floor(float_angle_cost * 100));
-
-                // todo: compute the distance cost
-                float float_distance_cost = 1.0f;
-                int distance_cost = static_cast<int>(floor(float_distance_cost * 100));
-
-                // compute the smoothness cost
-                float w1 = 1.0f;
-                float w2 = 1.0f - w1;
-                int smoothness_cost = static_cast<int>(std::floor(
-                    w1 * static_cast<float>(angle_cost) + w2 * static_cast<float>(distance_cost)));
+                float smoothness_cost = 1.0f - pow(cosine_value, 10.0f);
 
                 // store the result
                 smoothness_costs.push_back(
-                    {e.idx(), neighbor.idx(), angle_cost, distance_cost, smoothness_cost});
+                    {e.idx(), neighbor.idx(), smoothness_cost});
             }
         };
 
@@ -538,9 +510,9 @@ std::vector<SmoothnessCost> compute_smoothness_costs(Graph* graph) {
     }
 
     // compute the max, min, and mean of the smoothness costs
-    int max_smoothness_cost = 0;
-    int min_smoothness_cost = INT_MAX;
-    int mean_smoothness_cost = 0;
+    float max_smoothness_cost = 0.0f;
+    float min_smoothness_cost = std::numeric_limits<float>::max();
+    float mean_smoothness_cost = 0.0f;
     for (const auto& sc : smoothness_costs) {
         if (sc.smoothness_cost > max_smoothness_cost) max_smoothness_cost = sc.smoothness_cost;
         if (sc.smoothness_cost < min_smoothness_cost) min_smoothness_cost = sc.smoothness_cost;
@@ -553,33 +525,4 @@ std::vector<SmoothnessCost> compute_smoothness_costs(Graph* graph) {
 
     return smoothness_costs;
 }
-
-void SmoothWeightMap(const std::vector<SmoothnessCost>& smoothness_costs,
-                     std::unordered_map<std::pair<int, int>, int>& weight_map) {
-    SmoothnessCost max_sc = *std::max_element(smoothness_costs.begin(), smoothness_costs.end(),
-                                              [](const SmoothnessCost& a, const SmoothnessCost& b) {
-                                                  return a.smoothness_cost < b.smoothness_cost;
-                                              });
-    int max_smoothness_cost = max_sc.smoothness_cost;
-
-    for (const auto& sc : smoothness_costs) {
-        int min_idx = std::min(sc.edge1_idx, sc.edge2_idx);
-        int max_idx = std::max(sc.edge1_idx, sc.edge2_idx);
-        auto edge_pair = std::make_pair(min_idx, max_idx);
-        weight_map[edge_pair] = max_smoothness_cost - sc.smoothness_cost;
-    }
-}
-
-int SmoothFn(int site1, int site2, int label1, int label2, void* weightMap) {
-    auto& weight_map = *static_cast<std::unordered_map<std::pair<int, int>, int>*>(weightMap);
-    int min_idx = std::min(site1, site2);
-    int max_idx = std::max(site1, site2);
-    int weight = weight_map[std::make_pair(min_idx, max_idx)];
-    // if high weight (close to parallel), penalize different labels
-    if (weight >=97) {
-        return label1 == label2 ? 0 : 1;  // smooth if labels are the same
-    }
-    return 1;
-}
-
 }  // namespace graph_utils
