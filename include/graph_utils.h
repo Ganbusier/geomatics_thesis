@@ -1,7 +1,10 @@
 #include <easy3d/algo/delaunay_3d.h>
 #include <easy3d/core/graph.h>
+#include <easy3d/fileio/graph_io.h>
 #include <easy3d/core/point_cloud.h>
 #include <easy3d/kdtree/kdtree_search_eth.h>
+#include <queue>
+#include <unordered_set>
 
 using namespace easy3d;
 
@@ -15,6 +18,14 @@ namespace std {
 }
 
 namespace graph_utils {
+
+void save_graph(Graph* graph, const std::string& filename) {
+    if (GraphIO::save(filename, graph)) {
+        LOG(INFO) << "Graph saved successfully to " << filename;
+    } else {
+        LOG(ERROR) << "Failed to save graph to " << filename;
+    }
+}
 
 // build k-nearest neighbors graph
 Graph* build_knn_graph(PointCloud* cloud, int k) {
@@ -358,7 +369,6 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
 
     LOG(INFO) << "Computing edge length costs...";
 
-    float sigma_squared = 0.5f;
     for (const auto& e : graph->edges()) {
         auto source = graph->source(e);
         auto target = graph->target(e);
@@ -366,46 +376,90 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
         auto target_pos = graph->position(target);
         auto direction = (target_pos - source_pos).normalize();
         float edge_length = (target_pos - source_pos).length();
+        // =================== new edge length cost computation ===================
+        std::queue<Graph::Edge> edge_queue;
+        std::unordered_set<int> processed_edges;
+        float final_edge_length = 0.0f;
+        edge_queue.push(e);
+        processed_edges.insert(e.idx());
+        final_edge_length += edge_length;
 
-        auto final_source_pos = source_pos;
-        auto final_target_pos = target_pos;
-        float search_radius = 2.0f * mean_spacing;
-        float scale_factor = 5.0f;
+        while (!edge_queue.empty()) {
+            auto current_edge = edge_queue.front();
+            edge_queue.pop();
+            auto v1 = graph->source(current_edge);
+            auto v2 = graph->target(current_edge);
+            auto direction = graph->position(v2) - graph->position(v1);
+            direction = direction.normalize();
 
-        bool process_source = true;
-        bool process_target = true;
-        do {
-            std::vector<int> source_inliers;
-            std::vector<int> target_inliers;
-            auto current_source_pos = final_source_pos;
-            auto current_target_pos = final_target_pos;
-            auto next_source_pos = current_source_pos - scale_factor * mean_spacing * direction;
-            auto next_target_pos = current_target_pos + scale_factor * mean_spacing * direction;
-
-            if (process_source) {
-                // tree.find_points_in_range(next_source_pos, search_radius * search_radius, source_inliers);
-                tree.find_points_in_cylinder(current_source_pos, next_source_pos, search_radius, source_inliers);
-                process_source = source_inliers.size() > 1;
-            }
-            if (process_target) {
-                // tree.find_points_in_range(next_target_pos, search_radius * search_radius, target_inliers);
-                tree.find_points_in_cylinder(current_target_pos, next_target_pos, search_radius, target_inliers);
-                process_target = target_inliers.size() > 1;
-            }
-            if (!process_source && !process_target) break;
-
-            if (process_source) {
-                final_source_pos = next_source_pos;   
-            }
-            if (process_target) {
-                final_target_pos = next_target_pos; 
-            }
-        } while (process_source || process_target);
-
-        float final_edge_length = (final_target_pos - final_source_pos).length();
+            auto process_vertex = [&](Graph::Vertex v) {
+                float min_angle = 10.0f;
+                Graph::Edge best_edge;
+                for (auto neighbor_edge : graph->edges(v)) {
+                    if (processed_edges.count(neighbor_edge.idx())) continue;
+                    processed_edges.insert(neighbor_edge.idx());
+                    auto n_v1 = graph->source(neighbor_edge);
+                    auto n_v2 = graph->target(neighbor_edge);
+                    auto n_direction = graph->position(n_v2) - graph->position(n_v1);
+                    n_direction = n_direction.normalize();
+                    float cosine = dot(direction, n_direction);
+                    float angle = acos(std::clamp(cosine, -1.0f, 1.0f)) * 180.0f / M_PI; // [0, 180] degrees
+                    if (angle < min_angle) {
+                        min_angle = angle;
+                        best_edge = neighbor_edge;
+                    }
+                }
+                if (best_edge.idx() != -1) {
+                    edge_queue.push(best_edge);
+                    auto v1 = graph->source(best_edge);
+                    auto v2 = graph->target(best_edge);
+                    auto length = (graph->position(v2) - graph->position(v1)).length();
+                    final_edge_length += length;
+                }
+            };
+            process_vertex(v1);
+            process_vertex(v2);
+        }
         float edge_length_cost = edge_length / final_edge_length;
-        // float edge_length_cost = exp(-edge_length * edge_length / (2.0f * sigma_squared));
         edge_length_costs[e.idx()] = edge_length_cost;
+
+        // =================== old edge length cost computation ===================
+        // auto final_source_pos = source_pos;
+        // auto final_target_pos = target_pos;
+        // float search_radius = 2.0f * mean_spacing;
+        // float scale_factor = 5.0f;
+
+        // bool process_source = true;
+        // bool process_target = true;
+        // do {
+        //     std::vector<int> source_inliers;
+        //     std::vector<int> target_inliers;
+        //     auto current_source_pos = final_source_pos;
+        //     auto current_target_pos = final_target_pos;
+        //     auto next_source_pos = current_source_pos - scale_factor * mean_spacing * direction;
+        //     auto next_target_pos = current_target_pos + scale_factor * mean_spacing * direction;
+
+        //     if (process_source) {
+        //         tree.find_points_in_cylinder(current_source_pos, next_source_pos, search_radius, source_inliers);
+        //         process_source = source_inliers.size() > 1;
+        //     }
+        //     if (process_target) {
+        //         tree.find_points_in_cylinder(current_target_pos, next_target_pos, search_radius, target_inliers);
+        //         process_target = target_inliers.size() > 1;
+        //     }
+        //     if (!process_source && !process_target) break;
+
+        //     if (process_source) {
+        //         final_source_pos = next_source_pos;   
+        //     }
+        //     if (process_target) {
+        //         final_target_pos = next_target_pos; 
+        //     }
+        // } while (process_source || process_target);
+
+        // float final_edge_length = (final_target_pos - final_source_pos).length();
+        // float edge_length_cost = edge_length / final_edge_length;
+        // edge_length_costs[e.idx()] = edge_length_cost;
     }
 
     LOG(INFO) << "Edge length costs computed successfully.";
@@ -426,9 +480,12 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
 
     // ================ Data Costs Computation: final data costs ================
     for (size_t i = 0; i < graph->n_edges(); ++i) {
-        float w1 = inlier_prob_weight;
-        float w2 = 1.0f - w1;
-        data_costs[i] = w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i];
+        // float w1 = inlier_prob_weight;
+        // float w2 = 1.0f - w1;
+        // data_costs[i] = w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i];
+
+        // another data cost computation method
+        data_costs[i] = inliers_probability_costs[i] * edge_length_costs[i];
     }
     LOG(INFO) << "Final data costs computed successfully.";
 

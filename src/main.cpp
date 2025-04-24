@@ -30,7 +30,6 @@ using namespace graph_utils;
 
 // function declarations
 bool offset_xyz(Viewer* viewer, Model* model);
-bool edge_length_test(Viewer* viewer, Model* model);  // test edge length costs
 bool testDataCost(Viewer* viewer, Model* model);  // test data costs
 bool run_gco(Viewer* viewer, Model* model);
 
@@ -57,12 +56,10 @@ int main(int argc, char** argv) {
 
     // set usage instructions
     viewer.set_usage("'Ctrl + g': run gco approach\n"
-                     "'Ctrl + e': test edge length costs\n"
-                    "'Ctrl + i': test data costs.");
+                     "'Ctrl + i': test data costs.");
 
     // bind functions to keys
     viewer.bind(run_gco, model, Viewer::KEY_G, Viewer::MODIF_CTRL);
-    viewer.bind(edge_length_test, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
     viewer.bind(testDataCost, model, Viewer::KEY_I, Viewer::MODIF_CTRL);
 
     // fit screen
@@ -98,147 +95,6 @@ bool offset_xyz(Viewer* viewer, Model* model) {
 
     LOG(INFO) << "Offset point 0:" << points[PointCloud::Vertex(0)];
     cloud->add_vertex_property<vec3>("v:offset_vector", vec3(min_x, min_y, min_z));
-    return true;
-}
-
-bool edge_length_test(Viewer* viewer, Model* model) {
-    if (!viewer ||!model) return false;
-
-    auto cloud = dynamic_cast<PointCloud*>(model); 
-    auto points_property = cloud->get_vertex_property<vec3>("v:point");
-
-    // get points
-    std::vector<vec3> points;
-    for (const auto& v : cloud->vertices()) {
-        points.push_back(points_property[v]);
-    }
-
-    // build knn graph
-    int k_neighbors = 10;
-    easy3d::Graph* knn_graph = build_knn_graph(cloud, k_neighbors);
-
-    // build delaunay graph
-    easy3d::Graph* delaunay_graph = build_delaunay_graph(cloud);
-
-    // combine graphs
-    const float max_edge_length = 2.0f;
-    easy3d::Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
-
-    // ============================= test new edge length costs ========================================
-    const auto rr = rerun::RecordingStream("Edge length Test Logger");
-    rr.spawn().exit_on_failure();
-
-    // log points
-    std::vector<rerun::Position3D> rr_points;
-    for (const auto& p : points) {
-        rr_points.push_back(
-            {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)});
-    }
-
-    // log global graph edges to rerun
-    std::vector<rerun::LineStrip3D> global_graph_edges;
-    for (const auto& e : global_graph->edges()) {
-        auto source = global_graph->source(e);
-        auto target = global_graph->target(e);
-        auto source_pos = global_graph->position(source); 
-        auto target_pos = global_graph->position(target);
-        rerun::LineStrip3D global_graph_edge({
-            {static_cast<float>(source_pos.x), static_cast<float>(source_pos.y), static_cast<float>(source_pos.z)},
-            {static_cast<float>(target_pos.x), static_cast<float>(target_pos.y), static_cast<float>(target_pos.z)}
-        });
-        global_graph_edges.push_back(global_graph_edge);
-    }
-
-    auto tree = KdTreeSearch_ETH(cloud);
-    float mean_spacing = 0.0f;
-    int count = 0;
-
-    // find the second nearest neighbor for each point
-    for (const auto& v : cloud->vertices()) {
-        std::vector<int> nn_indices;
-        std::vector<float> nn_distances;
-        tree.find_closest_k_points(points[v.idx()], 2, nn_indices, nn_distances);
-        if (nn_indices.size() > 1) {
-            // the first neighbor is the point itself, the second neighbor is the nearest other
-            // point
-            mean_spacing += nn_distances[1];
-            count++;
-        }
-    }
-    // safe check to avoid division by zero
-    if (count > 0) {
-        mean_spacing /= count;
-        mean_spacing = sqrt(mean_spacing);
-        LOG(INFO) << "Mean point spacing: " << mean_spacing << "m (from " << count << " points)";
-    } else {
-        // use default value
-        mean_spacing = 0.1f;
-        LOG(INFO) << "Warning: Unable to compute mean point spacing, using default value: "
-                  << mean_spacing << "m";
-    }
-
-    std::vector<rerun::Collection<rerun::Vec3D>> extended_edges;
-    for (const auto& e : global_graph->edges()) {
-        auto source = global_graph->source(e);
-        auto target = global_graph->target(e);
-        auto source_pos = global_graph->position(source);
-        auto target_pos = global_graph->position(target);
-        auto direction = (target_pos - source_pos).normalize();
-        auto length = (target_pos - source_pos).length();
-
-        auto final_source_pos = source_pos;
-        auto final_target_pos = target_pos;
-        float search_radius = 2.0f * mean_spacing;
-        float scale_factor = 10.0f;
-
-        bool process_source = true;
-        bool process_target = true;
-        do {
-            std::vector<int> source_inliers;
-            std::vector<int> target_inliers;
-            auto current_source_pos = final_source_pos;
-            auto current_target_pos = final_target_pos;
-            auto next_source_pos = current_source_pos - scale_factor * mean_spacing * direction;
-            auto next_target_pos = current_target_pos + scale_factor * mean_spacing * direction;
-
-            if (process_source) {
-                // tree.find_points_in_range(next_source_pos, search_radius * search_radius, source_inliers);
-                tree.find_points_in_cylinder(current_source_pos, next_source_pos, search_radius, source_inliers);
-                process_source = source_inliers.size() > 1;
-            }
-            if (process_target) {
-                // tree.find_points_in_range(next_target_pos, search_radius * search_radius, target_inliers);
-                tree.find_points_in_cylinder(current_target_pos, next_target_pos, search_radius, target_inliers);
-                process_target = target_inliers.size() > 1;
-            }
-            if (!process_source && !process_target) break;
-
-            if (process_source) {
-                final_source_pos = next_source_pos;   
-            }
-            if (process_target) {
-                final_target_pos = next_target_pos; 
-            }
-        } while (process_source || process_target);
-
-        float final_length = (final_target_pos - final_source_pos).length();
-        if (final_length > length) {
-            rerun::Collection<rerun::Vec3D> extended_edge = {
-                {static_cast<float>(final_source_pos.x), static_cast<float>(final_source_pos.y), static_cast<float>(final_source_pos.z)},
-                {static_cast<float>(final_target_pos.x), static_cast<float>(final_target_pos.y), static_cast<float>(final_target_pos.z)}
-            };
-            extended_edges.push_back(extended_edge);
-        }
-    }
-
-    rr.log("points", rerun::Points3D(rr_points).with_radii({0.05f}));
-    rr.log("global graph edges", rerun::LineStrips3D(global_graph_edges).with_radii({0.02f}));
-    rr.log("extended_graph_edges", rerun::LineStrips3D(extended_edges).with_radii({0.02f}));
-
-    delete knn_graph;
-    delete delaunay_graph;
-    delete global_graph;
-
     return true;
 }
 
@@ -357,15 +213,15 @@ bool run_gco(Viewer* viewer, Model* model) {
 
     // set data costs
     std::vector<float> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
-                                                     1.0f);  // this is the cost to preserve an edge
+                                                     0.0f);  // this is the cost to preserve an edge
     for (size_t i = 0; i < global_graph->n_edges(); ++i) {
         // convert float to int with scale factor
-        int dc_preserved = static_cast<int>(data_costs[i] * scale_factor);
-        int dc_removed = scale_factor - dc_preserved;
+        int dc_preserved = static_cast<int>(std::floor(data_costs[i] * scale_factor));
+        int dc_removed = static_cast<int>(std::floor((1.0f - data_costs[i]) * scale_factor));
         // the cost to remove an edge
-        gc->setDataCost(i, 0, scale_factor * dc_removed);
+        gc->setDataCost(i, 0, dc_removed);
         // the cost to preserve an edge
-        gc->setDataCost(i, 1, scale_factor * dc_preserved);
+        gc->setDataCost(i, 1, dc_preserved);
     }
 
     // set neighbors and smoothness costs
@@ -374,8 +230,9 @@ bool run_gco(Viewer* viewer, Model* model) {
 
     // compute neighbor-pair weights, lower the cost, higher the weight
     for (const auto& sc : smoothness_costs) {
-        int sc_scaled = static_cast<int>(sc.smoothness_cost * scale_factor * lambda);
-        int neighbor_pair_weight = scale_factor - sc_scaled;
+        float sc_scaled = sc.smoothness_cost * scale_factor;
+        float nn_weight = scale_factor - sc_scaled;
+        int neighbor_pair_weight = static_cast<int>(std::floor(nn_weight * lambda)); 
         gc->setNeighbors(sc.edge1_idx, sc.edge2_idx, neighbor_pair_weight);
     }
     // heavily penalize different labels for low-angle-diff neighbor-pairs
