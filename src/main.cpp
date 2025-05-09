@@ -209,15 +209,16 @@ bool run_gco(Viewer* viewer, Model* model) {
         new GCoptimizationGeneralGraph(global_graph->n_edges(), num_labels);
     
     int scale_factor = 100; // for both data costs and smoothness costs
-    float lambda = 1.0f; // control the weight of the smoothness costs
+    float lambda1 = 10.0f; // control the weight of the data costs
+    float lambda2 = 1.0f; // control the weight of the smoothness costs
 
     // set data costs
     std::vector<float> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
                                                      0.0f);  // this is the cost to preserve an edge
     for (size_t i = 0; i < global_graph->n_edges(); ++i) {
         // convert float to int with scale factor
-        int dc_preserved = static_cast<int>(std::floor(data_costs[i] * scale_factor));
-        int dc_removed = static_cast<int>(std::floor((1.0f - data_costs[i]) * scale_factor));
+        int dc_preserved = static_cast<int>(std::floor(lambda1 * data_costs[i] * scale_factor));
+        int dc_removed = static_cast<int>(std::floor(lambda1 * (1.0f - data_costs[i]) * scale_factor));
         // the cost to remove an edge
         gc->setDataCost(i, 0, dc_removed);
         // the cost to preserve an edge
@@ -232,7 +233,7 @@ bool run_gco(Viewer* viewer, Model* model) {
     for (const auto& sc : smoothness_costs) {
         float sc_scaled = sc.smoothness_cost * scale_factor;
         float nn_weight = scale_factor - sc_scaled;
-        int neighbor_pair_weight = static_cast<int>(std::floor(nn_weight * lambda)); 
+        int neighbor_pair_weight = static_cast<int>(std::floor(nn_weight * lambda2)); 
         gc->setNeighbors(sc.edge1_idx, sc.edge2_idx, neighbor_pair_weight);
     }
     // heavily penalize different labels for low-angle-diff neighbor-pairs

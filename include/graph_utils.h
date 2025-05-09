@@ -393,7 +393,7 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
             direction = direction.normalize();
 
             auto process_vertex = [&](Graph::Vertex v) {
-                float min_angle = 10.0f;
+                float min_angle = 5.0f;
                 Graph::Edge best_edge;
                 for (auto neighbor_edge : graph->edges(v)) {
                     if (processed_edges.count(neighbor_edge.idx())) continue;
@@ -480,12 +480,12 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
 
     // ================ Data Costs Computation: final data costs ================
     for (size_t i = 0; i < graph->n_edges(); ++i) {
-        // float w1 = inlier_prob_weight;
-        // float w2 = 1.0f - w1;
-        // data_costs[i] = w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i];
+        float w1 = inlier_prob_weight;
+        float w2 = 1.0f - w1;
+        data_costs[i] = w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i];
 
         // another data cost computation method
-        data_costs[i] = inliers_probability_costs[i] * edge_length_costs[i];
+        // data_costs[i] = inliers_probability_costs[i] * edge_length_costs[i];
     }
     LOG(INFO) << "Final data costs computed successfully.";
 
