@@ -1,5 +1,16 @@
-#include <easy3d/algo/delaunay_3d.h>
+#include <CGAL/Bbox_3.h>
+#include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
+#include <CGAL/IO/read_points.h>
+#include <CGAL/OSQP_quadratic_program_traits.h>
+#include <CGAL/Point_set_3.h>
+#include <CGAL/Point_with_normal_3.h>
+#include <CGAL/Shape_detection/Efficient_RANSAC.h>
+#include <CGAL/Shape_detection/Region_growing/Point_set.h>
+#include <CGAL/Shape_detection/Region_growing/Region_growing.h>
+#include <CGAL/Shape_regularization/regularize_segments.h>
+#include <CGAL/property_map.h>
 #include <easy3d/algo/point_cloud_normals.h>
+#include <easy3d/algo/point_cloud_ransac.h>
 #include <easy3d/core/graph.h>
 #include <easy3d/core/model.h>
 #include <easy3d/core/point_cloud.h>
@@ -8,6 +19,7 @@
 #include <easy3d/renderer/drawable_lines.h>
 #include <easy3d/renderer/drawable_points.h>
 #include <easy3d/renderer/renderer.h>
+#include <easy3d/renderer/camera.h>
 #include <easy3d/util/initializer.h>
 #include <easy3d/util/resource.h>
 #include <easy3d/viewer/viewer.h>
@@ -17,21 +29,86 @@
 #include <rerun.hpp>
 #include <rerun/demo_utils.hpp>
 
-#include "graph_utils.h"
+#include "custom_3d_regularization.h"
+#include "ransac_2d.h"
+#include "spherical_kMeans.h"
+#include "custom_ransac.h"
 
-// define Graph as GCO_Graph to avoid conflict with easy3d::Graph when compiling
-#define Graph GCO_Graph
-#include "GCoptimization.h"
-#undef Graph
+// Typedefs for CGAL RANSAC
+using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
+using FT = Kernel::FT;
+using Point_with_normal = std::pair<Kernel::Point_3, Kernel::Vector_3>;
+using Pwn_vector = std::vector<Point_with_normal>;
+using Point_map = CGAL::First_of_pair_property_map<Point_with_normal>;
+using Normal_map = CGAL::Second_of_pair_property_map<Point_with_normal>;
+
+using Traits =
+    CGAL::Shape_detection::Efficient_RANSAC_traits<Kernel, Pwn_vector, Point_map, Normal_map>;
+using Efficient_ransac = CGAL::Shape_detection::Efficient_RANSAC<Traits>;
+using Cylinder = CGAL::Shape_detection::Cylinder<Traits>;
+using Plane = CGAL::Shape_detection::Plane<Traits>;
+using Sphere = CGAL::Shape_detection::Sphere<Traits>;
+
+using Point_3 = CGAL::Point_3<CGAL::Epick>;
+using Vector_3 = CGAL::Vector_3<CGAL::Epick>;
+
+// Typedefs for CGAL Region growing
+using Kernel_rg = CGAL::Simple_cartesian<double>;
+using Point_3_rg = Kernel_rg::Point_3;
+using Vector_3_rg = Kernel_rg::Vector_3;
+
+using Point_set = CGAL::Point_set_3<Point_3_rg>;
+using Point_map_rg = typename Point_set::Point_map;
+using Normal_map_rg = typename Point_set::Vector_map;
+
+using Neighbor_query = CGAL::Shape_detection::Point_set::K_neighbor_query_for_point_set<Point_set>;
+using Cylinder_Region_type =
+    CGAL::Shape_detection::Point_set::Least_squares_cylinder_fit_region_for_point_set<Point_set>;
+using Plane_Region_type =
+    CGAL::Shape_detection::Point_set::Least_squares_plane_fit_region_for_point_set<Point_set>;
+using Cylinder_Region_growing =
+    CGAL::Shape_detection::Region_growing<Neighbor_query, Cylinder_Region_type>;
+using Plane_Region_growing =
+    CGAL::Shape_detection::Region_growing<Neighbor_query, Plane_Region_type>;
+
+// Typedefs for CGAL Shape Regularization
+using Segment_2 = Kernel::Segment_2;
+using Segments = std::vector<Segment_2>;
+using Indices = std::vector<std::size_t>;
+using Segment_map = CGAL::Identity_property_map<Segment_2>;
+using SR_neighbor_query =
+    CGAL::Shape_regularization::Segments::Delaunay_neighbor_query_2<Kernel, Segments, Segment_map>;
+using Angle_regularization =
+    CGAL::Shape_regularization::Segments::Angle_regularization_2<Kernel, Segments, Segment_map>;
+using Offset_regularization =
+    CGAL::Shape_regularization::Segments::Offset_regularization_2<Kernel, Segments, Segment_map>;
+using Quadratic_program = CGAL::OSQP_quadratic_program_traits<FT>;
+
+using Quadratic_angle_regularizer =
+    CGAL::Shape_regularization::QP_regularization<Kernel, Segments, SR_neighbor_query,
+                                                  Angle_regularization, Quadratic_program>;
+using Quadratic_offset_regularizer =
+    CGAL::Shape_regularization::QP_regularization<Kernel, Segments, SR_neighbor_query,
+                                                  Offset_regularization, Quadratic_program>;
 
 using namespace easy3d;
 using namespace rerun::demo;
-using namespace graph_utils;
 
-// function declarations
+bool run_easy3d_ransac(Viewer* viewer, Model* model);
+bool run_cgal_ransac(Viewer* viewer, Model* model);
+bool run_cgal_ransac_plane(Viewer* viewer, Model* model);
+bool estimate_normals(Viewer* viewer, Model* model);
 bool offset_xyz(Viewer* viewer, Model* model);
-bool testDataCost(Viewer* viewer, Model* model);  // test data costs
-bool run_gco(Viewer* viewer, Model* model);
+bool run_cgal_region_growing(Viewer* viewer, Model* model);
+bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model);
+Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vector_3& d);
+
+std::vector<Drawable*> drawables;  // store drawables added to the viewer
+int k_neighbors = 16;              // k-nearest neighbors for normal estimation
+vec4 background_color(1.0f, 1.0f, 1.0f, 1.0f);
+vec4 point_color = vec4(0.0f, 0.6627f, 0.9882f, 1.0f);  // color for points
+vec4 red = vec4(1.0f, 0.0f, 0.0f, 1.0f);  // red
+vec4 lines_color = vec4(0.9843f, 0.3333f, 0.4902f, 1.0f);  // color for points
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -45,27 +122,92 @@ int main(int argc, char** argv) {
     LOG(INFO) << "Easy3D initialized";
 
     Viewer viewer("Geomatics Thesis");
+    viewer.set_background_color(background_color);
+    viewer.camera()->setType(Camera::ORTHOGRAPHIC);
+    viewer.camera()->setPosition(vec3(39722.3, 387932, 155.275));
+    viewer.camera()->setOrientation(quat(0.49253, 0.098896, 0.267161, 0.82235));
     Model* model = viewer.add_model(input_file_path, true);
     offset_xyz(&viewer, model);
-
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
-    drawable->set_uniform_coloring(vec4(0.6f, 0.6f, 1.0f, 1.0f));
+    drawable->set_uniform_coloring(red);
     drawable->set_impostor_type(PointsDrawable::PLAIN);
     drawable->set_point_size(3.0f);
 
-    // set usage instructions
-    viewer.set_usage("'Ctrl + g': run gco approach\n"
-                     "'Ctrl + i': test data costs.");
-
-    // bind functions to keys
-    viewer.bind(run_gco, model, Viewer::KEY_G, Viewer::MODIF_CTRL);
-    viewer.bind(testDataCost, model, Viewer::KEY_I, Viewer::MODIF_CTRL);
+    // usage
+    viewer.set_usage(
+        "'Ctrl + n': estimate normals\n"
+        "'Ctrl + e': run Easy3D KdTree-Graph Approach\n"
+        "'Shift + e': run CGAL RANSAC Plane\n"
+        "'Ctrl + r': run Easy3D RANSAC\n"
+        "'Shift + r': run CGAL RANSAC\n"
+        "'Shift + g': run CGAL Region Growing");
+    viewer.bind(run_cgal_ransac_plane, model, Viewer::KEY_E, Viewer::MODIF_SHIFT);
+    viewer.bind(run_easy3d_kdTree_graph_approach, model, Viewer::KEY_E, Viewer::MODIF_CTRL);
+    viewer.bind(estimate_normals, model, Viewer::KEY_N, Viewer::MODIF_CTRL);
+    viewer.bind(run_easy3d_ransac, model, Viewer::KEY_R, Viewer::MODIF_CTRL);
+    viewer.bind(run_cgal_ransac, model, Viewer::KEY_R, Viewer::MODIF_SHIFT);
+    viewer.bind(run_cgal_region_growing, model, Viewer::KEY_G, Viewer::MODIF_SHIFT);
 
     // fit screen
     viewer.fit_screen();
 
     return viewer.run();
+}
+
+bool show_normals(Viewer* viewer, PointCloud* cloud) {
+    if (!viewer || !cloud) return false;
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    auto drawable = cloud->renderer()->get_points_drawable("vertices");
+
+    // Upload the vertex normals to the GPU.
+    drawable->update_normal_buffer(normals.vector());
+    drawable->set_visible(true);
+    viewer->update();
+
+    // clear previous viewer drawables
+    for (auto& drawable : drawables) {
+        viewer->delete_drawable(drawable);
+    }
+    drawables.clear();
+
+    for (auto vertex : cloud->vertices()) {
+        auto normal = normals[vertex];
+        auto point = points[vertex];
+        auto line_drawable = new LinesDrawable("normal");
+        std::vector<vec3> line_points = {point, point + normal * 3.0f};
+        std::vector<unsigned int> cylinder_indices = {0, 1};
+        line_drawable->update_vertex_buffer(line_points);
+        line_drawable->update_element_buffer(cylinder_indices);
+        line_drawable->set_impostor_type(LinesDrawable::PLAIN);
+        line_drawable->set_line_width(1.0f);
+        line_drawable->set_uniform_coloring(lines_color);
+        viewer->add_drawable(line_drawable);
+        drawables.push_back(line_drawable);
+    }
+    return true;
+}
+
+bool estimate_normals(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    if (!normals) {
+        LOG(INFO) << "Point cloud does not have normals. Estimating...";
+        if (PointCloudNormals::estimate(cloud, k_neighbors)) {
+            show_normals(viewer, cloud);
+            return true;
+        } else {
+            return false;
+        }
+    } else {
+        LOG(INFO) << "Point cloud already has normals.";
+        show_normals(viewer, cloud);
+        return true;
+    }
+
+    return true;
 }
 
 bool offset_xyz(Viewer* viewer, Model* model) {
@@ -98,199 +240,1079 @@ bool offset_xyz(Viewer* viewer, Model* model) {
     return true;
 }
 
-bool testDataCost(Viewer* viewer, Model* model) {
-    if (!viewer ||!model) return false;
+bool run_easy3d_ransac(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
 
-    auto cloud = dynamic_cast<PointCloud*>(model); 
-    auto points_property = cloud->get_vertex_property<vec3>("v:point");
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
 
-    // get points
-    std::vector<vec3> points;
-    for (const auto& v : cloud->vertices()) {
-        points.push_back(points_property[v]);
+    if (!normals) {
+        bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
+        if (!estimate_normals) {
+            LOG(WARNING) << "No normals found or estimated for point cloud";
+            return false;
+        }
     }
 
-    // build knn graph
-    int k_neighbors = 10;
-    easy3d::Graph* knn_graph = build_knn_graph(cloud, k_neighbors);
+    // iterate over different parameters for RANSAC
+    PrimitivesRansac ransac;
 
-    // build delaunay graph
-    easy3d::Graph* delaunay_graph = build_delaunay_graph(cloud);
+    ransac.add_primitive_type(PrimitivesRansac::CYLINDER);
 
-    // combine graphs
-    const float max_edge_length = 2.0f;
-    easy3d::Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
+    float normal_threshold = 0.9f;
+    float overlook_probability = 0.001f;
+    float bitmap_resolution = 0.5f;
+    float dist_threshold = 0.05f;
+    unsigned int min_support = 20;
 
-    std::vector<float> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
-                                                     0.0f);  // this is the cost to preserve an edge
+    int num_cylinders = ransac.detect(cloud, min_support, dist_threshold, bitmap_resolution,
+                                      normal_threshold, overlook_probability);
 
-    const auto rr = rerun::RecordingStream("Data Cost Test Logger");
-    rr.spawn().exit_on_failure();
+    if (num_cylinders > 0) {
+        LOG(INFO) << "Detected " << num_cylinders << " cylinders";
+        auto cylinders = ransac.get_cylinders();
+        auto segments = cloud->vertex_property<int>("v:primitive_index");
+        const std::string color_name = "v:color-segments";
+        auto coloring = cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        Renderer::color_from_segmentation(cloud, segments, coloring);
 
-    // log points
-    std::vector<rerun::Position3D> rr_points;
-    for (const auto& p : points) {
-        rr_points.push_back(
-            {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)});
+        auto drawable = cloud->renderer()->get_points_drawable("vertices");
+        drawable->set_visible(true);
+        drawable->set_property_coloring(State::VERTEX, color_name);
+        drawable->update();
+        viewer->update();
+
+        // clear previous viewer drawables
+        for (auto& drawable : drawables) {
+            viewer->delete_drawable(drawable);
+        }
+        drawables.clear();
+
+        // draw bbox and cylinders
+        for (int i = 0; i < cylinders.size(); i++) {
+            auto cylinder = cylinders[i];
+            LOG(INFO) << "Cylinder " << i << ": " << cylinder.position << " -- "
+                      << cylinder.direction << " -- " << cylinder.radius << " -- "
+                      << cylinder.vertices.size();
+            std::vector<int>& vertices = cylinder.vertices;
+            std::vector<vec3> cylinder_points;
+            for (int& vertex : vertices) {
+                cylinder_points.push_back(points[PointCloud::Vertex(vertex)]);
+            }
+
+            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+            float xmin = box.min_coord(0);
+            float xmax = box.max_coord(0);
+            float ymin = box.min_coord(1);
+            float ymax = box.max_coord(1);
+            float zmin = box.min_coord(2);
+            float zmax = box.max_coord(2);
+            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            bbox_drawable->update_vertex_buffer(bbox_points);
+            bbox_drawable->update_element_buffer(bbox_indices);
+            bbox_drawable->set_uniform_coloring(lines_color);
+            bbox_drawable->set_line_width(5.0f);
+            viewer->add_drawable(bbox_drawable);
+            drawables.push_back(bbox_drawable);
+
+            auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
+            std::vector<vec3> cylinder_endpoints = {
+                cylinder.position - cylinder.direction * box.radius(),
+                cylinder.position + cylinder.direction * box.radius()};
+            std::vector<unsigned int> cylinder_indices = {0, 1};
+            cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
+            cylinder_drawable->update_element_buffer(cylinder_indices);
+            cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
+            cylinder_drawable->set_line_width(cylinder.radius * 2.0f);
+            cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            viewer->add_drawable(cylinder_drawable);
+            drawables.push_back(cylinder_drawable);
+        }
+    }
+    return true;
+}
+
+bool run_cgal_ransac(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    if (!normals) {
+        bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
+        normals = cloud->get_vertex_property<vec3>("v:normal");
+        if (!estimate_normals) {
+            LOG(WARNING) << "No normals found or estimated for point cloud";
+            return false;
+        }
     }
 
-    // log global graph edges based on their data costs
-    std::vector<rerun::Collection<rerun::Vec3D>> edges_less_than_10;
-    std::vector<rerun::Collection<rerun::Vec3D>> edges_10_to_30;
-    std::vector<rerun::Collection<rerun::Vec3D>> edges_30_to_50;
-    std::vector<rerun::Collection<rerun::Vec3D>> edges_more_than_50;
-    int iter = 0;
-    for (const auto& e : global_graph->edges()) {
-        auto source = global_graph->source(e);
-        auto target = global_graph->target(e);
-        auto source_pos = global_graph->position(source); 
-        auto target_pos = global_graph->position(target);
-        rerun::Collection<rerun::Vec3D> edge = {
-            {static_cast<float>(source_pos.x), static_cast<float>(source_pos.y), static_cast<float>(source_pos.z)},
-            {static_cast<float>(target_pos.x), static_cast<float>(target_pos.y), static_cast<float>(target_pos.z)}
-        };
-        if (data_costs[iter] <= 0.1) {
-            edges_less_than_10.push_back(edge); 
-        }
-        else if (data_costs[iter] <= 0.3) {
-            edges_10_to_30.push_back(edge); 
-        }
-        else if (data_costs[iter] <= 0.5) {
-            edges_30_to_50.push_back(edge); 
-        }
-        else {
-            edges_more_than_50.push_back(edge); 
-        }
-        iter++;
+    LOG(INFO) << "Constructing point_with_normal_vector";
+    Pwn_vector pwn_vector;
+    for (const auto& vertex : cloud->vertices()) {
+        const easy3d::vec3 p = points[vertex];
+        const easy3d::vec3 n = normals[vertex];
+        pwn_vector.emplace_back(Kernel::Point_3(p[0], p[1], p[2]),
+                                Kernel::Vector_3(n[0], n[1], n[2]));
     }
 
-    rr.log("points", rerun::Points3D(rr_points).with_radii({0.05f}));
-    rr.log("data cost <=10", rerun::LineStrips3D(edges_less_than_10).with_radii({0.02f}));
-    rr.log("10 < data cost <= 30", rerun::LineStrips3D(edges_10_to_30).with_radii({0.02f}));
-    rr.log("30 < data cost <= 50", rerun::LineStrips3D(edges_30_to_50).with_radii({0.02f}));
-    rr.log("50 < data cost", rerun::LineStrips3D(edges_more_than_50).with_radii({0.02f}));
+    LOG(INFO) << "Running CGAL RANSAC";
+    Efficient_ransac ransac;
 
-    delete knn_graph;
-    delete delaunay_graph;
-    delete global_graph;
+    ransac.set_input(pwn_vector);  // the pwn_vector will be reordered after RANSAC
+
+    ransac.add_shape_factory<Cylinder>();
+
+    Efficient_ransac::Parameters params;
+    params.normal_threshold = 0.9;
+    params.probability = 0.01;
+    params.min_points = 20;
+    params.epsilon = 0.05;
+    params.cluster_epsilon = 1.0;
+
+    ransac.detect(params);
+
+    auto shapes = ransac.shapes();
+    std::vector<Cylinder*> cylinders;
+    for (auto& shape : shapes) {
+        if (Cylinder* cylinder = dynamic_cast<Cylinder*>(shape.get())) {
+            cylinders.push_back(cylinder);
+        }
+    }
+    int num_cylinders = cylinders.size();
+
+    LOG(INFO) << "Detected " << num_cylinders << " cylinders, "
+              << ransac.number_of_unassigned_points() << " unassigned points.";
+
+    if (num_cylinders > 0) {
+        // clear previous viewer drawables
+        for (auto& drawable : drawables) {
+            viewer->delete_drawable(drawable);
+        }
+        drawables.clear();
+
+        // hide default point cloud
+        auto default_drawable = cloud->renderer()->get_points_drawable("vertices");
+        default_drawable->set_visible(false);
+        default_drawable->update();
+        viewer->update();
+
+        // build new point cloud
+        PointCloud* new_cloud = new PointCloud;
+        auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
+        auto new_normals = new_cloud->add_vertex_property<vec3>("v:normal");
+        // initialize segments property to -1 which means unknown primitive type
+        auto segments = new_cloud->add_vertex_property<int>("v:primitive_index", -1);
+        for (size_t i = 0; i < pwn_vector.size(); i++) {
+            auto pwn = pwn_vector[i];
+            auto& point = pwn.first;
+            auto& normal = pwn.second;
+            new_cloud->add_vertex(vec3(point.x(), point.y(), point.z()));
+            new_normals[PointCloud::Vertex(i)] = vec3(normal.x(), normal.y(), normal.z());
+        }
+
+        for (size_t i = 0; i < cylinders.size(); i++) {
+            auto cylinder = cylinders[i];
+            const std::vector<std::size_t>& indices = cylinder->indices_of_assigned_points();
+            for (auto& index : indices) {
+                PointCloud::Vertex v(index);
+                segments[v] = i;
+            }
+        }
+
+        // draw new point cloud
+        const std::string color_name = "v:color-segments";
+        auto coloring = new_cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        Renderer::color_from_segmentation(new_cloud, segments, coloring);
+
+        auto drawable = new PointsDrawable("vertices");
+        drawable->set_property_coloring(State::VERTEX, color_name);
+        drawable->set_impostor_type(PointsDrawable::PLAIN);
+        drawable->set_point_size(3.0f);
+
+        drawable->update_vertex_buffer(new_points.vector());
+        drawable->update_normal_buffer(new_normals.vector());
+        drawable->update_color_buffer(coloring.vector());
+
+        viewer->add_drawable(drawable);
+        drawables.push_back(drawable);
+
+        // draw bbox and cylinders
+        for (int i = 0; i < cylinders.size(); i++) {
+            auto cylinder = cylinders[i];
+            LOG(INFO) << "Cylinder " << i << ": " << cylinder->info();
+            const std::vector<std::size_t>& indices = cylinder->indices_of_assigned_points();
+            std::vector<vec3> cylinder_points;
+            for (auto& index : indices) {
+                cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
+            }
+
+            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+            auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+            LOG(INFO) << "Box " << i << " center: " << box.center();
+            float xmin = box.min_coord(0);
+            float xmax = box.max_coord(0);
+            float ymin = box.min_coord(1);
+            float ymax = box.max_coord(1);
+            float zmin = box.min_coord(2);
+            float zmax = box.max_coord(2);
+            const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin, zmax),
+                                                   vec3(xmin, ymax, zmax), vec3(xmax, ymax, zmax),
+                                                   vec3(xmin, ymin, zmin), vec3(xmax, ymin, zmin),
+                                                   vec3(xmin, ymax, zmin), vec3(xmax, ymax, zmin)};
+            const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+                                                            1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            bbox_drawable->update_vertex_buffer(bbox_points);
+            bbox_drawable->update_element_buffer(bbox_indices);
+            bbox_drawable->set_uniform_coloring(lines_color);
+            bbox_drawable->set_line_width(5.0f);
+            viewer->add_drawable(bbox_drawable);
+            drawables.push_back(bbox_drawable);
+
+            auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
+            auto axis = cylinder->axis();
+            auto direction = axis.to_vector();
+            auto cylinder_center = axis.point(0);
+            auto box_center = Point_3(box.center().x, box.center().y, box.center().z);
+            auto center = move_point_perpendicular(cylinder_center, box_center, direction);
+            auto start_point = cylinder_center - direction * box.radius();
+            auto end_point = cylinder_center + direction * box.radius();
+            auto radius = cylinder->radius();
+            std::vector<vec3> cylinder_endpoints = {
+                vec3(start_point.x(), start_point.y(), start_point.z()),
+                vec3(end_point.x(), end_point.y(), end_point.z())};
+            std::vector<unsigned int> cylinder_indices = {0, 1};
+            cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
+            cylinder_drawable->update_element_buffer(cylinder_indices);
+            cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
+            cylinder_drawable->set_line_width(2.0 * radius);
+            cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            viewer->add_drawable(cylinder_drawable);
+            drawables.push_back(cylinder_drawable);
+        }
+    }
+    return true;
+}
+
+bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    if (!normals) {
+        bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
+        normals = cloud->get_vertex_property<vec3>("v:normal");
+        if (!estimate_normals) {
+            LOG(WARNING) << "No normals found or estimated for point cloud";
+            return false;
+        }
+    }
+
+    LOG(INFO) << "Constructing point_with_normal_vector";
+    Pwn_vector pwn_vector;
+    for (const auto& vertex : cloud->vertices()) {
+        const easy3d::vec3 p = points[vertex];
+        const easy3d::vec3 n = normals[vertex];
+        pwn_vector.emplace_back(Kernel::Point_3(p[0], p[1], p[2]),
+                                Kernel::Vector_3(n[0], n[1], n[2]));
+    }
+
+    LOG(INFO) << "Running CGAL RANSAC to detect planes";
+    Efficient_ransac ransac;
+
+    ransac.set_input(pwn_vector);  // the pwn_vector will be reordered after RANSAC
+
+    ransac.add_shape_factory<Plane>();
+
+    Efficient_ransac::Parameters params;
+    params.normal_threshold = 0;
+    params.probability = 0.01;
+    params.min_points = 20;
+    params.epsilon = 0.1;
+    params.cluster_epsilon = 0.5;
+
+    ransac.detect(params);
+
+    auto shapes = ransac.shapes();
+    std::vector<Plane*> planes;
+    for (auto& shape : shapes) {
+        if (Plane* plane = dynamic_cast<Plane*>(shape.get())) {
+            planes.push_back(plane);
+        }
+    }
+    int num_planes = planes.size();
+    LOG(INFO) << "Detected " << num_planes << " planes, " << ransac.number_of_unassigned_points()
+              << " unassigned points.";
+
+    // get indices of all unassigned points
+    const auto& unassigned_iter = ransac.indices_of_unassigned_points();
+    std::vector<size_t> indices_of_all_unassigned_points(unassigned_iter.begin(),
+                                                         unassigned_iter.end());
+
+    // get indices of all assigned points
+    std::vector<size_t> indices_of_all_assigned_points(pwn_vector.size());
+    std::iota(indices_of_all_assigned_points.begin(), indices_of_all_assigned_points.end(), 0);
+    indices_of_all_assigned_points.erase(
+        std::remove_if(indices_of_all_assigned_points.begin(), indices_of_all_assigned_points.end(),
+                       [&](size_t idx) {
+                           return std::find(indices_of_all_unassigned_points.begin(),
+                                            indices_of_all_unassigned_points.end(),
+                                            idx) != indices_of_all_unassigned_points.end();
+                       }),
+        indices_of_all_assigned_points.end());
+
+    if (num_planes > 0) {
+        // build new point cloud
+        PointCloud* new_cloud = new PointCloud;
+        auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
+        auto new_normals = new_cloud->add_vertex_property<vec3>("v:normal");
+        // initialize segments property to -1 which means unknown primitive type
+        auto segments = new_cloud->add_vertex_property<int>("v:primitive_index", -1);
+        for (size_t i = 0; i < pwn_vector.size(); i++) {
+            auto pwn = pwn_vector[i];
+            auto& point = pwn.first;
+            auto& normal = pwn.second;
+            new_cloud->add_vertex(vec3(point.x(), point.y(), point.z()));
+            new_normals[PointCloud::Vertex(i)] = vec3(normal.x(), normal.y(), normal.z());
+        }
+
+        for (size_t i = 0; i < planes.size(); i++) {
+            auto plane = planes[i];
+            const std::vector<std::size_t>& indices = plane->indices_of_assigned_points();
+            for (auto& index : indices) {
+                PointCloud::Vertex v(index);
+                segments[v] = i;
+            }
+        }
+
+        const std::string color_name = "v:color-segments";
+        auto coloring = new_cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        Renderer::color_from_segmentation(new_cloud, segments, coloring);
+
+        // create rerun logger
+        const auto rec = rerun::RecordingStream("cgal_ransac_plane");
+        rec.spawn().exit_on_failure();
+
+        // perform 2D ransac on assigned points of each plane
+        size_t plane_index = 0;
+        for (auto& plane : planes) {
+            // std::vector<std::size_t> indices = plane->indices_of_assigned_points();
+            std::vector<Point_3> assigned_points;
+            for (auto& i : plane->indices_of_assigned_points()) {
+                auto& p = pwn_vector[i].first;
+                assigned_points.push_back(p);
+            }
+            auto assigned_points_bbox =
+                CGAL::bbox_3(assigned_points.begin(), assigned_points.end());
+            auto zmin = assigned_points_bbox.zmin();
+            auto zmax = assigned_points_bbox.zmax();
+            LOG(INFO) << plane->info();
+
+            // assign points to each plane based on another distance threshold
+            // std::vector<std::size_t> indices;
+            // for (size_t i : indices_of_all_assigned_points) {
+            //     auto& p = pwn_vector[i].first;
+            //     if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 16.0) {
+            //         indices.push_back(i);
+            //     }
+            // }
+            std::vector<std::size_t> indices;
+            for (size_t i = 0; i < pwn_vector.size(); i++) {
+                auto& p = pwn_vector[i].first;
+                if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 100.0) {
+                    indices.push_back(i);
+                }
+            }
+
+            std::vector<rerun::Color> points_colors(indices.size(), rerun::Color(255, 0, 0));
+            std::vector<rerun::Position3D> points3d(indices.size());
+            std::vector<rerun::Position2D> points2d(indices.size());
+            std::vector<Ransac_2d::Point> points_2d(indices.size());
+            size_t i = 0;
+            for (auto& index : indices) {
+                PointCloud::Vertex v(index);
+                auto point = new_points[v];
+                auto color = coloring[v];
+                points3d[i] = rerun::Position3D{point.x, point.y, point.z};
+                points_colors[i] =
+                    rerun::Color(round(color.x * 255), round(color.y * 255), round(color.z * 255));
+
+                // construct 2d points for 2D RANSAC
+                auto p = pwn_vector[index].first;
+                auto p_2d = plane->to_2d(p);
+                Ransac_2d::Point point_2d;
+                point_2d.x = p_2d.x();
+                point_2d.y = p_2d.y();
+                points_2d[i] = point_2d;
+                points2d[i] = rerun::Position2D{static_cast<float>(point_2d.x),
+                                                static_cast<float>(point_2d.y)};
+                i++;
+            }
+
+            // 2D RANSAC parameters
+            size_t max_iterations = 200;
+            size_t min_inliers = 4;
+            double tolerance = 0.1;
+            double split_distance_thres = 9999;
+
+            // perform 2D RANSAC
+            Ransac_2d ransac2D;
+            std::vector<Ransac_2d::Line> lines = ransac2D.detect(
+                points_2d, max_iterations, min_inliers, tolerance, split_distance_thres);
+            LOG(INFO) << "Plane" << plane_index << ": detect " << lines.size() << " lines.";
+            if (lines.size() == 0) {
+                plane_index++;
+                continue;
+            }
+
+            // set QP regularization
+            std::vector<Segment_2> segments2D;
+            const FT max_angle_2 = FT(5);
+            const FT max_offset_2 = FT(0.5);
+
+            for (const auto& line : lines) {
+                Kernel::Point_2 p1(line.start.x, line.start.y);
+                Kernel::Point_2 p2(line.end.x, line.end.y);
+                Segment_2 seg = Segment_2(p1, p2);
+                segments2D.push_back(seg);
+            }
+
+            // create QP solver, neighbor query and angle-based regularization model
+            Quadratic_program qp_angles;
+            SR_neighbor_query sr_neighbor_query(segments2D);
+            Angle_regularization angle_regularization(segments2D,
+                                                      CGAL::parameters::maximum_angle(max_angle_2));
+
+            // regularize
+            Quadratic_angle_regularizer qp_angle_regularizer(segments2D, sr_neighbor_query,
+                                                             angle_regularization, qp_angles);
+            qp_angle_regularizer.regularize();
+
+            // offset regularization
+            // get groups of parallel segments after angle regularization
+            std::vector<std::vector<size_t>> pgroups;
+            angle_regularization.parallel_groups(std::back_inserter(pgroups));
+
+            // create qp solver and offset-based regularization model
+            Quadratic_program qp_offsets;
+            Offset_regularization offset_regularization(
+                segments2D, CGAL::parameters::maximum_offset(max_offset_2));
+
+            // add each group of parallel segments with at least 2 segments
+            sr_neighbor_query.clear();
+            for (const auto& pgroup : pgroups) {
+                sr_neighbor_query.add_group(pgroup);
+                offset_regularization.add_group(pgroup);
+            }
+
+            // regularize
+            Quadratic_offset_regularizer qp_offset_regularizer(segments2D, sr_neighbor_query,
+                                                               offset_regularization, qp_offsets);
+            qp_offset_regularizer.regularize();
+
+            // convert 2d segments back to 3d
+            std::vector<rerun::Collection<rerun::Vec2D>> sr_strips2d;
+            std::vector<rerun::Collection<rerun::Vec3D>> sr_strips3d;
+            for (const auto& segment : segments2D) {
+                auto start_2d = segment.start();
+                auto end_2d = segment.end();
+                auto start = plane->to_3d(start_2d);
+                auto end = plane->to_3d(end_2d);
+                rerun::Collection<rerun::Vec2D> strip2d = {
+                    {static_cast<float>(start_2d.x()), static_cast<float>(start_2d.y())},
+                    {static_cast<float>(end_2d.x()), static_cast<float>(end_2d.y())}};
+                rerun::Collection<rerun::Vec3D> strip3d = {
+                    {static_cast<float>(start.x()), static_cast<float>(start.y()),
+                     static_cast<float>(start.z())},
+                    {static_cast<float>(end.x()), static_cast<float>(end.y()),
+                     static_cast<float>(end.z())}};
+                sr_strips2d.push_back(strip2d);
+                sr_strips3d.push_back(strip3d);
+            }
+
+            // construct 3D lines from 2D lines
+            std::vector<rerun::Collection<rerun::Vec3D>> strips;
+            std::vector<rerun::Collection<rerun::Vec2D>> strips2d;
+            for (size_t line_idx = 0; line_idx < lines.size(); ++line_idx) {
+                Ransac_2d::Line line = lines[line_idx];
+                LOG(INFO) << "line " << line_idx << ": " << line.a << "x + " << line.b << "y + "
+                          << line.c << " = 0";
+
+                auto start_2d = Kernel::Point_2(line.start.x, line.start.y);
+                auto end_2d = Kernel::Point_2(line.end.x, line.end.y);
+                rerun::Collection<rerun::Vec2D> strip2d = {
+                    {static_cast<float>(start_2d.x()), static_cast<float>(start_2d.y())},
+                    {static_cast<float>(end_2d.x()), static_cast<float>(end_2d.y())}};
+                auto start = plane->to_3d(start_2d);
+                auto end = plane->to_3d(end_2d);
+                rerun::Collection<rerun::Vec3D> strip = {
+                    {static_cast<float>(start.x()), static_cast<float>(start.y()),
+                     static_cast<float>(start.z())},
+                    {static_cast<float>(end.x()), static_cast<float>(end.y()),
+                     static_cast<float>(end.z())}};
+                strips.push_back(strip);
+                strips2d.push_back(strip2d);
+            }
+
+            // log points and lines to rerun
+            rec.log("points/points" + std::to_string(plane_index),
+                    rerun::Points3D(points3d).with_colors(points_colors).with_radii({0.1f}));
+            rec.log("segments/segments" + std::to_string(plane_index),
+                    rerun::LineStrips3D(strips).with_radii({0.1f}));
+            // rec.log("segments_R" + std::to_string(plane_index),
+            // rerun::LineStrips3D(sr_strips3d).with_radii({0.1f}));
+
+            rec.log("2D_points",
+                    rerun::Points2D(points2d).with_colors(points_colors).with_radii({0.1f}));
+            rec.log("2D_segments", rerun::LineStrips2D(strips2d).with_radii({0.1f}));
+            rec.log("2D_segments_R", rerun::LineStrips2D(sr_strips2d).with_radii({0.1f}));
+
+            plane_index++;
+        }
+
+        // log unassigned points to rerun
+        auto begin = ransac.indices_of_unassigned_points().begin();
+        auto end = ransac.indices_of_unassigned_points().end();
+        const size_t unassigned_points_size = ransac.number_of_unassigned_points();
+        std::vector<rerun::Position3D> visual_points(unassigned_points_size);
+        std::vector<rerun::Color> points_colors(unassigned_points_size, rerun::Color(1, 1, 1));
+        int i = 0;
+        for (auto it = begin; it != end; it++) {
+            auto point_with_normal = *(pwn_vector.begin() + *it);
+            auto point = point_with_normal.first;
+            auto p = vec3(point.x(), point.y(), point.z());
+            visual_points[i] = rerun::Position3D{p.x, p.y, p.z};
+            i++;
+        }
+        rec.log("points/unassigned_points",
+                rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.1f}));
+    }
 
     return true;
 }
 
-bool run_gco(Viewer* viewer, Model* model) {
+bool run_cgal_region_growing(Viewer* viewer, Model* model) {
     if (!viewer || !model) return false;
 
     auto cloud = dynamic_cast<PointCloud*>(model);
-    auto points_property = cloud->get_vertex_property<vec3>("v:point");
-
-    // get points
-    std::vector<vec3> points;
-    for (const auto& v : cloud->vertices()) {
-        points.push_back(points_property[v]);
-    }
-
-    // build knn graph
-    int k_neighbors = 10;
-    easy3d::Graph* knn_graph = build_knn_graph(cloud, k_neighbors);
-
-    // build delaunay graph
-    easy3d::Graph* delaunay_graph = build_delaunay_graph(cloud);
-
-    // combine graphs
-    const float max_edge_length = 2.0f;
-    easy3d::Graph* global_graph = combine_graphs(knn_graph, delaunay_graph, max_edge_length);
-
-    // construct dual graph
-    // easy3d::Graph* dual_graph = construct_dual_graph(global_graph);
-    
-    // ================================= run GCO =================================
-    int num_labels = 2;  // 2 labels: 0 and 1 --> 0: remove, 1: preserve
-    GCoptimizationGeneralGraph* gc =
-        new GCoptimizationGeneralGraph(global_graph->n_edges(), num_labels);
-    
-    int scale_factor = 100; // for both data costs and smoothness costs
-    float lambda1 = 10.0f; // control the weight of the data costs
-    float lambda2 = 1.0f; // control the weight of the smoothness costs
-
-    // set data costs
-    std::vector<float> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
-                                                     0.0f);  // this is the cost to preserve an edge
-    for (size_t i = 0; i < global_graph->n_edges(); ++i) {
-        // convert float to int with scale factor
-        int dc_preserved = static_cast<int>(std::floor(lambda1 * data_costs[i] * scale_factor));
-        int dc_removed = static_cast<int>(std::floor(lambda1 * (1.0f - data_costs[i]) * scale_factor));
-        // the cost to remove an edge
-        gc->setDataCost(i, 0, dc_removed);
-        // the cost to preserve an edge
-        gc->setDataCost(i, 1, dc_preserved);
-    }
-
-    // set neighbors and smoothness costs
-    std::vector<SmoothnessCost> smoothness_costs = compute_smoothness_costs(global_graph);
-    LOG(INFO) << "Smoothness costs size: " << smoothness_costs.size();
-
-    // compute neighbor-pair weights, lower the cost, higher the weight
-    for (const auto& sc : smoothness_costs) {
-        float sc_scaled = sc.smoothness_cost * scale_factor;
-        float nn_weight = scale_factor - sc_scaled;
-        int neighbor_pair_weight = static_cast<int>(std::floor(nn_weight * lambda2)); 
-        gc->setNeighbors(sc.edge1_idx, sc.edge2_idx, neighbor_pair_weight);
-    }
-    // heavily penalize different labels for low-angle-diff neighbor-pairs
-    int V[4] = {0, 1, 1, 0};  // V[label1 + num_label*label2] --> V(0,0), V(1,0), V(0,1), V(1,1)
-                              // must satisfy: V(0, 0) + V(1, 1) <= V(0,1) + V(1,0)
-    gc->setSmoothCost(V); // initially the smooth cost will be: sum(w_i * V(0,0))
-
-    LOG(INFO) << "Before optimization, energy: " << gc->compute_energy()
-              << ", data cost: " << gc->giveDataEnergy()
-              << ", smoothness cost: " << gc->giveSmoothEnergy();
-    gc->expansion(99);
-    LOG(INFO) << "After optimization, energy: " << gc->compute_energy()
-              << ", data cost: " << gc->giveDataEnergy()
-              << ", smoothness cost: " << gc->giveSmoothEnergy();
-
-    // log preserved and removed edges to rerun
-    const auto rr = rerun::RecordingStream("GCO Approach logger");
-    rr.spawn().exit_on_failure();
-
-    // log points
-    std::vector<rerun::Position3D> rr_points;
-    for (const auto& p : points) {
-        rr_points.push_back(
-            {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)});
-    }
-    rr.log("points", rerun::Points3D(rr_points));
-
-    // log preserved and removed edges seperately
-    std::vector<rerun::Collection<rerun::Vec3D>> preserved_edges;
-    std::vector<rerun::Collection<rerun::Vec3D>> removed_edges;
-    for (const auto& e : global_graph->edges()) {
-        int label = gc->whatLabel(e.idx());
-        auto source = global_graph->source(e);
-        auto target = global_graph->target(e);
-        auto start = global_graph->position(source);
-        auto end = global_graph->position(target);
-
-        rerun::Collection<rerun::Vec3D> strip = {
-            {static_cast<float>(start.x), static_cast<float>(start.y), static_cast<float>(start.z)},
-            {static_cast<float>(end.x), static_cast<float>(end.y), static_cast<float>(end.z)}};
-
-        if (label == 1) {
-            preserved_edges.push_back(strip);
-        } else {
-            removed_edges.push_back(strip);
+    auto normals = cloud->get_vertex_property<vec3>("v:normal");
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    if (!normals) {
+        bool estimate_normals = PointCloudNormals::estimate(cloud, k_neighbors);
+        normals = cloud->get_vertex_property<vec3>("v:normal");
+        if (!estimate_normals) {
+            LOG(WARNING) << "No normals found or estimated for point cloud";
+            return false;
         }
     }
 
-    LOG(INFO) << "Preserved edges: " << preserved_edges.size();
-    LOG(INFO) << "Removed edges: " << removed_edges.size();
-    rr.log("preserved_edges", rerun::LineStrips3D(preserved_edges).with_radii({0.02f}));
-    rr.log("removed_edges", rerun::LineStrips3D(removed_edges).with_radii({0.01f}));
+    LOG(INFO) << "Constructing point set for region growing";
+    Point_set point_set;
+    for (const auto& vertex : cloud->vertices()) {
+        const easy3d::vec3 p = points[vertex];
+        const easy3d::vec3 n = normals[vertex];
+        point_set.insert(Point_3_rg(p[0], p[1], p[2]), Vector_3_rg(n[0], n[1], n[2]));
+    }
+    LOG(INFO) << "Point set size: " << point_set.size();
 
-    delete gc;
-    delete knn_graph;
-    delete delaunay_graph;
-    delete global_graph;
+    LOG(INFO) << "Running CGAL region growing";
+
+    // set up region growing parameters
+    const std::size_t k = 16;
+    const FT max_distance = FT(0.1);
+    const FT max_angle = FT(25);
+    const FT min_radius = FT(0.1);
+    const FT max_radius = FT(1.0);
+    const std::size_t min_region_size = 4;
+
+    // create instances of the classes Neighbor_query and Region_type
+    Neighbor_query neighbor_query = CGAL::Shape_detection::Point_set::make_k_neighbor_query(
+        point_set, CGAL::parameters::k_neighbors(k));
+
+    Cylinder_Region_type cylinder_region_type =
+        CGAL::Shape_detection::Point_set::make_least_squares_cylinder_fit_region(
+            point_set, CGAL::parameters::maximum_distance(max_distance)
+                           .maximum_angle(max_angle)
+                           .minimum_radius(min_radius)
+                           .maximum_radius(max_radius)
+                           .minimum_region_size(min_region_size));
+
+    // Plane_Region_type plane_region_type =
+    //     CGAL::Shape_detection::Point_set::make_least_squares_plane_fit_region(
+    //         point_set, CGAL::parameters::maximum_distance(max_distance)
+    //                        .maximum_angle(max_angle)
+    //                        .minimum_region_size(min_region_size));
+
+    // create an instance of the class Region_growing
+    Cylinder_Region_growing region_growing(point_set, neighbor_query, cylinder_region_type);
+
+    // run the region growing algorithm
+    CGAL::Random random;
+    std::size_t num_cylinders = 0;
+    std::size_t num_unassigned_points = point_set.size();
+    std::vector<typename Cylinder_Region_growing::Primitive_and_region> regions;
+    region_growing.detect(std::back_inserter(regions));
+
+    LOG(INFO) << "Detected " << regions.size() << " cylinders.";
+
+    if (!regions.empty()) {
+        for (auto& region : regions) {
+            const auto& indices = region.second;
+            num_unassigned_points -= indices.size();
+        }
+    }
+    LOG(INFO) << "Number of unassigned points: " << num_unassigned_points;
+
+    std::vector<Point_3_rg> unassigned_points;
+    {
+        std::vector<bool> assigned(point_set.size(), false);
+        for (const auto& region : regions) {
+            for (const auto& idx : region.second) {
+                assigned[idx] = true;
+            }
+        }
+        for (std::size_t i = 0; i < point_set.size(); ++i) {
+            if (!assigned[i]) {
+                unassigned_points.push_back(point_set.point(i));
+            }
+        }
+    }
+
+    const std::string output_path = "unassigned_points.txt";
+    std::ofstream outfile(output_path);
+    if (outfile.is_open()) {
+        outfile << std::fixed << std::setprecision(6);
+        for (const auto& p : unassigned_points) {
+            outfile << p.x() << " " << p.y() << " " << p.z() << "\n";
+        }
+        outfile.close();
+        LOG(INFO) << "Exported " << unassigned_points.size() << " unassigned points to " << output_path;
+    } else {
+        LOG(ERROR) << "Failed to open output file: " << output_path;
+    }
+
+    if (!regions.empty()) {
+        for (auto& drawable : drawables) {
+            viewer->delete_drawable(drawable);
+        }
+        drawables.clear();
+
+        // // hide default point cloud
+        // auto default_drawable = cloud->renderer()->get_points_drawable("vertices");
+        // default_drawable->set_visible(false);
+        // default_drawable->update();
+        // viewer->update();
+
+        // build new point cloud
+        PointCloud* new_cloud = new PointCloud;
+        auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
+        auto new_normals = new_cloud->add_vertex_property<vec3>("v:normal");
+        // initialize segments property to -1 which means unknown primitive type
+        auto segments = new_cloud->add_vertex_property<int>("v:primitive_index", -1);
+        for (size_t i = 0; i < point_set.size(); ++i) {
+            const auto& point = point_set.point(i);
+            const auto& normal = point_set.normal(i);
+            new_cloud->add_vertex(vec3(point.x(), point.y(), point.z()));
+            new_normals[PointCloud::Vertex(i)] = vec3(normal.x(), normal.y(), normal.z());
+        }
+
+        for (size_t i = 0; i < regions.size(); ++i) {
+            const auto& primitive_and_region = regions[i];
+            const auto& indices = primitive_and_region.second;
+            for (auto& index : indices) {
+                PointCloud::Vertex v(index);
+                segments[v] = i;
+            }
+        }
+
+        // // draw new point cloud
+        // const std::string color_name = "v:color-segments";
+        // auto coloring = new_cloud->vertex_property<vec3>(color_name, vec3(0.0f));
+        // Renderer::color_from_segmentation(new_cloud, segments, coloring);
+
+        // auto drawable = new PointsDrawable("vertices");
+        // drawable->set_property_coloring(State::VERTEX, color_name);
+        // drawable->set_impostor_type(PointsDrawable::PLAIN);
+        // drawable->set_point_size(3.0f);
+
+        // drawable->update_vertex_buffer(new_points.vector());
+        // drawable->update_normal_buffer(new_normals.vector());
+        // drawable->update_color_buffer(coloring.vector());
+
+        // viewer->add_drawable(drawable);
+        // drawables.push_back(drawable);
+
+        // create csv file to store cylinder parameters
+        std::ofstream csv_file("regionGrowing_cylinder_params.csv");
+        csv_file << "cylinder_id,radius,length,start_x,start_y,start_z,end_x,end_y,end_z,inlier_numbers\n";
+
+        for (size_t i = 0; i < regions.size(); ++i) {
+            const auto& primitive_and_region = regions[i];
+            const auto& cylinder = primitive_and_region.first;
+            const auto& indices = primitive_and_region.second;
+            LOG(INFO) << "Cylinder " << i << " center: " << cylinder.axis.point(0)
+                      << " radius: " << cylinder.radius
+                      << " direction: " << cylinder.axis.to_vector();
+
+            std::vector<vec3> cylinder_points;
+            for (auto& index : indices) {
+                cylinder_points.push_back(new_points[PointCloud::Vertex(index)]);
+            }
+
+            const Box3& box = geom::bounding_box<Box3, std::vector<vec3>>(cylinder_points);
+            // auto bbox_drawable = new LinesDrawable("bbox" + std::to_string(i));
+            // LOG(INFO) << "Box " << i << " center: " << box.center();
+            // float xmin = box.min_coord(0);
+            // float xmax = box.max_coord(0);
+            // float ymin = box.min_coord(1);
+            // float ymax = box.max_coord(1);
+            // float zmin = box.min_coord(2);
+            // float zmax = box.max_coord(2);
+            // const std::vector<vec3> bbox_points = {vec3(xmin, ymin, zmax), vec3(xmax, ymin,
+            // zmax),
+            //                                        vec3(xmin, ymax, zmax), vec3(xmax, ymax,
+            //                                        zmax), vec3(xmin, ymin, zmin), vec3(xmax,
+            //                                        ymin, zmin), vec3(xmin, ymax, zmin),
+            //                                        vec3(xmax, ymax, zmin)};
+            // const std::vector<unsigned int> bbox_indices = {0, 1, 2, 3, 4, 5, 6, 7, 0, 2, 4, 6,
+            //                                                 1, 3, 5, 7, 0, 4, 2, 6, 1, 5, 3, 7};
+            // bbox_drawable->update_vertex_buffer(bbox_points);
+            // bbox_drawable->update_element_buffer(bbox_indices);
+            // bbox_drawable->set_uniform_coloring(vec4(0.0f, 0.0f, 1.0f, 1.0f));
+            // bbox_drawable->set_line_width(5.0f);
+            // viewer->add_drawable(bbox_drawable);
+            // drawables.push_back(bbox_drawable);
+
+            auto cylinder_drawable = new LinesDrawable("cylinder" + std::to_string(i));
+            auto axis = cylinder.axis;
+            auto center_point = axis.point(0);
+            auto direction = axis.to_vector();
+            auto start_point = center_point + direction * box.radius();
+            auto end_point = center_point - direction * box.radius();
+            auto length = std::sqrt(CGAL::squared_distance(start_point, end_point));
+            auto radius = cylinder.radius;
+
+            // write cylinder parameters to csv file
+            csv_file << i << ","
+                     << cylinder.radius << ","
+                     << length << ","
+                     << start_point.x() << ","
+                     << start_point.y() << ","
+                     << start_point.z() << ","
+                     << end_point.x() << ","
+                     << end_point.y() << ","
+                     << end_point.z() << ","
+                     << indices.size() << "\n";
+
+            std::vector<vec3> cylinder_endpoints = {
+                vec3(start_point.x(), start_point.y(), start_point.z()),
+                vec3(end_point.x(), end_point.y(), end_point.z())};
+            std::vector<unsigned int> cylinder_indices = {0, 1};
+            cylinder_drawable->update_vertex_buffer(cylinder_endpoints);
+            cylinder_drawable->update_element_buffer(cylinder_indices);
+            cylinder_drawable->set_impostor_type(LinesDrawable::CYLINDER);
+            cylinder_drawable->set_line_width(20.0 * radius);
+            cylinder_drawable->set_uniform_coloring(vec4(1.0f, 0.0f, 0.0f, 1.0f));
+            viewer->add_drawable(cylinder_drawable);
+            drawables.push_back(cylinder_drawable);
+        }
+        csv_file.close();
+    }
+
+    return true;
+}
+
+Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vector_3& d) {
+    Vector_3 diff = p2 - p1;
+    Vector_3 projection = (diff * d) / d.squared_length() * d;
+    Point_3 moved_p1 = p1 + projection;
+    return moved_p1;
+}
+
+bool run_easy3d_kdTree_graph_approach(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    // create rerun logger
+    const auto rr = rerun::RecordingStream("kdTree Approach logger");
+    rr.spawn().exit_on_failure();
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+    // construct kdtree for the point cloud and set search radius
+    auto tree = KdTreeSearch_ETH(cloud);
+    float search_radius = 3.0;
+    float squared_search_radius = search_radius * search_radius;
+
+    // perform kdTree approach on each point
+    size_t iter = 0;
+    for (const auto& v : cloud->vertices()) {
+        if (iter >= 1500) break;
+        vec3 p = points[v];
+
+        // perform kdTree search to find neighbors
+        std::vector<int> neighbors_indices;
+        std::vector<float> neighbors_squared_distances;
+        int k = 16;
+        // tree.find_points_in_range(p, squared_search_radius, neighbors_indices,
+        //                           neighbors_squared_distances);
+        tree.find_closest_k_points(p, k, neighbors_indices, neighbors_squared_distances);
+
+        // construct graph from p and its neighbors
+        easy3d::Graph* graph = new Graph;
+        Graph::Vertex v0 = graph->add_vertex(p);
+        // add each neighor into the graph and construct edge [p, neighor_i]
+        for (const auto& i : neighbors_indices) {
+            PointCloud::Vertex v(i);
+            vec3 pi = points[v];
+            Graph::Vertex vi = graph->add_vertex(pi);
+            graph->add_edge(v0, vi);
+        }
+
+        // perform spherical kMeans to regularize lines
+        std::vector<int> bestLabels;
+        std::vector<vec3> bestCenters;
+        float bestInertia;
+
+        std::vector<vec3> directions;
+        for (const auto& e : graph->edges()) {
+            vec3 source = graph->position(graph->source(e));
+            vec3 target = graph->position(graph->target(e));
+            vec3 direction = target - source;
+            directions.push_back(direction.normalize());
+        }
+
+        // apply optimal k selection
+        int optimalK = chooseOptimalK(directions, 1, 4, 100, 0.1, bestLabels, bestCenters,
+                                      bestInertia, ClusterEvaluationMethod::SILHOUETTE);
+
+        // group edges based on labels into clusters
+        std::vector<std::vector<Graph::Edge>> clusterEdges(optimalK);
+        int edgeIndex = 0;
+        for (const auto& e : graph->edges()) {
+            int label = bestLabels[edgeIndex];
+            clusterEdges[label].push_back(e);
+            ++edgeIndex;
+        }
+
+        // for each cluster, select and adjust the representative edge
+        std::vector<Graph::Edge> keptEdges;
+        for (int c = 0; c < optimalK; c++) {
+            // find the longest edge in the cluster
+            float maxLength = -std::numeric_limits<float>::max();
+            Graph::Edge longestEdge;
+            bool found = false;
+
+            for (const auto& edge : clusterEdges[c]) {
+                vec3 source = graph->position(graph->source(edge));
+                vec3 target = graph->position(graph->target(edge));
+                float length = (target - source).length();
+
+                if (length > maxLength) {
+                    maxLength = length;
+                    longestEdge = edge;
+                    found = true;
+                }
+            }
+
+            if (found) {
+                // use the longest edge but adjust its direction to the cluster's main direction
+                vec3 source = graph->position(graph->source(longestEdge));
+                vec3 target = graph->position(graph->target(longestEdge));
+                float length = (target - source).length();
+
+                // use bestCenters[c] as direction while maintaining edge length
+                vec3 newDirection = vec3(bestCenters[c].x, bestCenters[c].y, bestCenters[c].z);
+                vec3 newTarget = source + newDirection * length;
+
+                // update the edge endpoint
+                graph->position(graph->target(longestEdge)) = newTarget;
+                keptEdges.push_back(longestEdge);
+            }
+        }
+
+        // apply custom 3d QP regularizaion
+        // trasnsfrom easy3d graph edges into CGAL segments
+        std::vector<custom_3d::Segment_3> segments;
+        for (const auto e : graph->edges()) {
+            vec3 source = graph->position(graph->source(e));
+            vec3 target = graph->position(graph->target(e));
+            custom_3d::Point_3 s(source.x, source.y, source.z);
+            custom_3d::Point_3 t(target.x, target.y, target.z);
+            custom_3d::Segment_3 seg(s, t);
+            segments.push_back(seg);
+        }
+        // execute 3d QP regularization (angle, then offset)
+        custom_3d::Combined_regularization_3::Parameters params(45, 0.5, 5.0, 0.5);
+        custom_3d::Combined_regularization_3::regularize(segments, params);
+
+        // log QP regularized segments to the logger
+        std::vector<rerun::Collection<rerun::Vec3D>> qp_strips3d;
+        for (const auto& seg : segments) {
+            auto s = seg.source;
+            auto t = seg.target;
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(s.x()), static_cast<float>(s.y()), static_cast<float>(s.z())},
+                {static_cast<float>(t.x()), static_cast<float>(t.y()), static_cast<float>(t.z())}};
+            qp_strips3d.push_back(strip);
+        }
+        rr.log("QP_segments/segments" + std::to_string(iter),
+               rerun::LineStrips3D(qp_strips3d).with_radii(0.01f));
+
+        // log the point cloud to the logger
+        std::vector<rerun::Position3D> rr_point_cloud;
+        for (const auto& v : cloud->vertices()) {
+            vec3 p = points[v];
+            rr_point_cloud.push_back(rerun::Position3D{p.x, p.y, p.z});
+        }
+        rr.log("points", rerun::Points3D(rr_point_cloud).with_radii({0.05f}));
+
+        // log all lines of the graph to the logger
+        std::vector<rerun::Collection<rerun::Vec3D>> strips3d;
+        for (const auto& e : graph->edges()) {
+            auto source = graph->source(e);
+            auto target = graph->target(e);
+            auto start = graph->position(source);
+            auto end = graph->position(target);
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(start.x), static_cast<float>(start.y),
+                 static_cast<float>(start.z)},
+                {static_cast<float>(end.x), static_cast<float>(end.y), static_cast<float>(end.z)}};
+            strips3d.push_back(strip);
+        }
+        rr.log("segments/segments" + std::to_string(iter),
+               rerun::LineStrips3D(strips3d).with_radii({0.01f}));
+
+        // log regularized segments to rerun
+        std::vector<rerun::Collection<rerun::Vec3D>> strips3d_regulairzed;
+        for (const auto& edge : keptEdges) {
+            auto source = graph->source(edge);
+            auto target = graph->target(edge);
+            auto start = graph->position(source);
+            auto end = graph->position(target);
+            rerun::Collection<rerun::Vec3D> strip = {
+                {static_cast<float>(start.x), static_cast<float>(start.y),
+                 static_cast<float>(start.z)},
+                {static_cast<float>(end.x), static_cast<float>(end.y), static_cast<float>(end.z)}};
+            strips3d_regulairzed.push_back(strip);
+        }
+        rr.log("segments_regularized/segments" + std::to_string(iter),
+               rerun::LineStrips3D(strips3d_regulairzed).with_radii({0.01f}));
+        iter++;
+    }
+
+    return true;
+}
+
+bool run_pca_based_ransac(Viewer* viewer, Model* model) {
+    if (!viewer || !model) return false;
+
+    auto cloud = dynamic_cast<PointCloud*>(model);
+    auto points = cloud->get_vertex_property<vec3>("v:point");
+
+    // initialize rerun logger
+    const auto rr = rerun::RecordingStream("PCA-based RANSAC logger");
+    rr.spawn().exit_on_failure();
+
+    // project points to principal plane using PCA
+    std::vector<custom_ransac::Point_3> custom_ransac_points;
+    for (const auto& v : cloud->vertices()) {
+        custom_ransac::Point_3 p(points[v].x, points[v].y, points[v].z);
+        custom_ransac_points.push_back(p);
+    }
+    auto pca_result = custom_ransac::project_to_principal_plane(custom_ransac_points, 100);
+
+    // log projected 2d points to rerun
+    std::vector<rerun::Position2D> projected_points;
+    for (const auto& point : pca_result.points_2d) {
+        projected_points.push_back(rerun::Position2D{static_cast<float>(point.x), static_cast<float>(point.y)});
+    }
+    rr.log("projected_points", rerun::Points2D(projected_points).with_radii({0.1f}));
+
+    // perform 2d ransac line segment detection
+    custom_ransac::Ransac_2d ransac_2d;
+    custom_ransac::Ransac_2d::Parameters params;
+    params.max_iterations = 10000;
+    params.min_inliers = 5;
+    params.min_length = 0.1;
+    params.max_length = 1e6;
+    params.tolerance = 0.05;
+    params.split_threshold = 1.0;
+    std::vector<custom_ransac::Ransac_2d::Line> lines = ransac_2d.detect(pca_result.points_2d, params);
+
+    // log lines to rerun
+    std::vector<rerun::Collection<rerun::Vec2D>> lines2d;
+    for (const auto& line : lines) {
+        rerun::Collection<rerun::Vec2D> strip = {
+            {static_cast<float>(line.start.x), static_cast<float>(line.start.y)},
+            {static_cast<float>(line.end.x), static_cast<float>(line.end.y)}
+        };
+        lines2d.push_back(strip);
+    }
+    rr.log("lines", rerun::LineStrips2D(lines2d).with_radii({0.1f}));
+
+    // perform CGAL 2D QP regularization
+    std::vector<Segment_2> segments2D;
+    const FT max_angle_2 = FT(5);
+    const FT max_offset_2 = FT(0.15);
+
+    for (const auto& line : lines) {
+        Kernel::Point_2 p1(line.start.x, line.start.y);
+        Kernel::Point_2 p2(line.end.x, line.end.y);
+        Segment_2 seg = Segment_2(p1, p2);
+        segments2D.push_back(seg);
+    }
+
+    // create QP solver, neighbor query and angle-based regularization model
+    Quadratic_program qp_angles;
+    SR_neighbor_query sr_neighbor_query(segments2D);
+    Angle_regularization angle_regularization(segments2D,
+                                                CGAL::parameters::maximum_angle(max_angle_2));
+
+    // regularize
+    Quadratic_angle_regularizer qp_angle_regularizer(segments2D, sr_neighbor_query,
+                                                        angle_regularization, qp_angles);
+    qp_angle_regularizer.regularize();
+
+    // offset regularization
+    // get groups of parallel segments after angle regularization
+    std::vector<std::vector<size_t>> pgroups;
+    angle_regularization.parallel_groups(std::back_inserter(pgroups));
+
+    // create qp solver and offset-based regularization model
+    Quadratic_program qp_offsets;
+    Offset_regularization offset_regularization(
+        segments2D, CGAL::parameters::maximum_offset(max_offset_2));
+
+    // add each group of parallel segments with at least 2 segments
+    sr_neighbor_query.clear();
+    for (const auto& pgroup : pgroups) {
+        sr_neighbor_query.add_group(pgroup);
+        offset_regularization.add_group(pgroup);
+    }
+
+    // regularize
+    Quadratic_offset_regularizer qp_offset_regularizer(segments2D, sr_neighbor_query,
+                                                        offset_regularization, qp_offsets);
+    qp_offset_regularizer.regularize();
+
+    // log regularized segments to rerun
+    std::vector<rerun::Collection<rerun::Vec2D>> regularized_lines;
+    for (const auto& seg : segments2D) {
+        rerun::Collection<rerun::Vec2D> strip = {
+            {static_cast<float>(seg.source().x()), static_cast<float>(seg.source().y())},
+            {static_cast<float>(seg.target().x()), static_cast<float>(seg.target().y())}
+        };
+        regularized_lines.push_back(strip);
+    }
+    rr.log("regularized_lines", rerun::LineStrips2D(regularized_lines).with_radii({0.1f}));
 
     return true;
 }
