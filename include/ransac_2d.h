@@ -173,14 +173,18 @@ class Ransac_2d {
         size_t min_model_samples = 2;
         if (inlier_thres <= min_inliers) return lines;
 
+        std::vector<size_t> remaining_indices = all_remaining_indices;
         while (inlier_thres >= min_inliers) {
-            std::vector<size_t> remaining_indices = all_remaining_indices;
             std::cout << " Remaining indices: " << remaining_indices.size();
             std::cout << " Current inliers threshold: " << inlier_thres << std::endl;
             std::vector<Line> candidate_lines;
 
             size_t iter = 0;
-            while (iter < max_iterations && remaining_indices.size() >= inlier_thres) {
+            size_t iter2 = 0;
+            while (iter < max_iterations && 
+                   iter2 < 10000 &&
+                   remaining_indices.size() > inlier_thres && 
+                   inlier_thres > 4) {
                 // sample two points randomly
                 std::vector<size_t> sample_indices(2);
                 std::sample(remaining_indices.begin(), remaining_indices.end(),
@@ -189,8 +193,8 @@ class Ransac_2d {
                 const Point& p2 = points[sample_indices[1]];
 
                 // pass if points are overlapped or too far
-                if (std::hypot(p1.x - p2.x, p1.y - p2.y) < 1e-6) continue;
-                if (std::hypot(p1.x - p2.x, p1.y - p2.y) > 0.5) continue;
+                if (std::hypot(p1.x - p2.x, p1.y - p2.y) < 1e-6) { iter2++; continue; }
+                if (std::hypot(p1.x - p2.x, p1.y - p2.y) > 0.5) { iter2++; continue; }
 
                 // compute candidate line
                 Line candidate_line = computeLineModel(p1, p2);

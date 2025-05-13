@@ -16,10 +16,10 @@
 #include <easy3d/core/point_cloud.h>
 #include <easy3d/fileio/point_cloud_io.h>
 #include <easy3d/kdtree/kdtree_search_eth.h>
+#include <easy3d/renderer/camera.h>
 #include <easy3d/renderer/drawable_lines.h>
 #include <easy3d/renderer/drawable_points.h>
 #include <easy3d/renderer/renderer.h>
-#include <easy3d/renderer/camera.h>
 #include <easy3d/util/initializer.h>
 #include <easy3d/util/resource.h>
 #include <easy3d/viewer/viewer.h>
@@ -30,9 +30,10 @@
 #include <rerun/demo_utils.hpp>
 
 #include "custom_3d_regularization.h"
+#include "custom_ransac.h"
 #include "ransac_2d.h"
 #include "spherical_kMeans.h"
-#include "custom_ransac.h"
+
 
 // Typedefs for CGAL RANSAC
 using Kernel = CGAL::Exact_predicates_inexact_constructions_kernel;
@@ -106,8 +107,8 @@ Point_3 move_point_perpendicular(const Point_3& p1, const Point_3& p2, const Vec
 std::vector<Drawable*> drawables;  // store drawables added to the viewer
 int k_neighbors = 16;              // k-nearest neighbors for normal estimation
 vec4 background_color(1.0f, 1.0f, 1.0f, 1.0f);
-vec4 point_color = vec4(0.0f, 0.6627f, 0.9882f, 1.0f);  // color for points
-vec4 red = vec4(1.0f, 0.0f, 0.0f, 1.0f);  // red
+vec4 point_color = vec4(0.0f, 0.6627f, 0.9882f, 1.0f);     // color for points
+vec4 red = vec4(1.0f, 0.0f, 0.0f, 1.0f);                   // red
 vec4 lines_color = vec4(0.9843f, 0.3333f, 0.4902f, 1.0f);  // color for points
 
 int main(int argc, char** argv) {
@@ -533,11 +534,11 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
     ransac.add_shape_factory<Plane>();
 
     Efficient_ransac::Parameters params;
-    params.normal_threshold = 0;
+    params.normal_threshold = 0.0;
     params.probability = 0.01;
-    params.min_points = 20;
+    params.min_points = 10;
     params.epsilon = 0.1;
-    params.cluster_epsilon = 0.5;
+    params.cluster_epsilon = 1.0;
 
     ransac.detect(params);
 
@@ -570,6 +571,13 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
         indices_of_all_assigned_points.end());
 
     if (num_planes > 0) {
+        // create csv file to store line information
+        std::ofstream out("lines_info.csv");
+        out << "line_idx,length,max_distance,min_distance,mean_distance,distance_stdv"
+            << std::endl;
+        
+        std::vector<size_t> leftover_indices;
+
         // build new point cloud
         PointCloud* new_cloud = new PointCloud;
         auto new_points = new_cloud->get_vertex_property<vec3>("v:point");
@@ -616,21 +624,15 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             auto zmax = assigned_points_bbox.zmax();
             LOG(INFO) << plane->info();
 
-            // assign points to each plane based on another distance threshold
+            // // assign points to each plane based on another distance threshold
             // std::vector<std::size_t> indices;
-            // for (size_t i : indices_of_all_assigned_points) {
+            // for (size_t i = 0; i < pwn_vector.size(); i++) {
             //     auto& p = pwn_vector[i].first;
-            //     if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 16.0) {
+            //     if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 0.02) {
             //         indices.push_back(i);
             //     }
             // }
-            std::vector<std::size_t> indices;
-            for (size_t i = 0; i < pwn_vector.size(); i++) {
-                auto& p = pwn_vector[i].first;
-                if (zmin <= p.z() && zmax >= p.z() && plane->squared_distance(p) <= 100.0) {
-                    indices.push_back(i);
-                }
-            }
+            std::vector<std::size_t> indices = plane->indices_of_assigned_points();
 
             std::vector<rerun::Color> points_colors(indices.size(), rerun::Color(255, 0, 0));
             std::vector<rerun::Position3D> points3d(indices.size());
@@ -661,7 +663,7 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             size_t max_iterations = 200;
             size_t min_inliers = 4;
             double tolerance = 0.1;
-            double split_distance_thres = 9999;
+            double split_distance_thres = 2.0;
 
             // perform 2D RANSAC
             Ransac_2d ransac2D;
@@ -669,6 +671,9 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
                 points_2d, max_iterations, min_inliers, tolerance, split_distance_thres);
             LOG(INFO) << "Plane" << plane_index << ": detect " << lines.size() << " lines.";
             if (lines.size() == 0) {
+                for (auto& index : plane->indices_of_assigned_points()) {
+                    leftover_indices.push_back(index);
+                }
                 plane_index++;
                 continue;
             }
@@ -762,28 +767,82 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
                 strips2d.push_back(strip2d);
             }
 
+            // for each line, calculate the max, min, mean and standard deviation of the distance of
+            // its inlier points to the line
+            std::vector<double> max_distances;
+            std::vector<double> min_distances;
+            std::vector<double> mean_distances;
+            std::vector<double> std_distances;
+            std::vector<double> lengths;
+            for (size_t line_idx = 0; line_idx < lines.size(); ++line_idx) {
+                Ransac_2d::Line line = lines[line_idx];
+                double length = std::hypot(line.end.x - line.start.x, line.end.y - line.start.y);
+                std::vector<double> distances;
+                for (const size_t id : line.inlier_indices) {
+                    auto p = points_2d[id];
+                    double dist = std::abs(line.a * p.x + line.b * p.y + line.c);
+                    distances.push_back(dist);
+                }
+                double max_distance = *std::max_element(distances.begin(), distances.end());
+                double min_distance = *std::min_element(distances.begin(), distances.end());
+                double mean_distance =
+                    std::accumulate(distances.begin(), distances.end(), 0.0) / distances.size();
+                double std_distance = 0.0;
+                for (const double& dist : distances) {
+                    std_distance += std::pow(dist - mean_distance, 2);
+                }
+                std_distance = std::sqrt(std_distance / distances.size());
+                max_distances.push_back(max_distance);
+                min_distances.push_back(min_distance);
+                mean_distances.push_back(mean_distance);
+                std_distances.push_back(std_distance);
+                lengths.push_back(length);
+            }
+            // output lines info to csv file
+            for (size_t line_idx = 0; line_idx < lines.size(); ++line_idx) {
+                out << line_idx << "," << lengths[line_idx] << "," << max_distances[line_idx] << ","
+                    << min_distances[line_idx] << "," << mean_distances[line_idx] << ","
+                    << std_distances[line_idx] << std::endl;
+            }
+
             // log points and lines to rerun
+            std::vector<rerun::Color> line_colors(strips.size(), rerun::Color(251, 85, 125));
             rec.log("points/points" + std::to_string(plane_index),
                     rerun::Points3D(points3d).with_colors(points_colors).with_radii({0.1f}));
             rec.log("segments/segments" + std::to_string(plane_index),
-                    rerun::LineStrips3D(strips).with_radii({0.1f}));
+                    rerun::LineStrips3D(strips).with_colors(line_colors).with_radii({0.1f}));
             // rec.log("segments_R" + std::to_string(plane_index),
             // rerun::LineStrips3D(sr_strips3d).with_radii({0.1f}));
 
-            rec.log("2D_points",
-                    rerun::Points2D(points2d).with_colors(points_colors).with_radii({0.1f}));
-            rec.log("2D_segments", rerun::LineStrips2D(strips2d).with_radii({0.1f}));
-            rec.log("2D_segments_R", rerun::LineStrips2D(sr_strips2d).with_radii({0.1f}));
+            // rec.log("2D_points",
+            //         rerun::Points2D(points2d).with_colors(points_colors).with_radii({0.1f}));
+            // rec.log("2D_segments", rerun::LineStrips2D(strips2d).with_radii({0.1f}));
+            // rec.log("2D_segments_R", rerun::LineStrips2D(sr_strips2d).with_radii({0.1f}));
 
             plane_index++;
         }
+        // close csv file
+        out.close();
+
+        // log all points to rerun
+        std::vector<rerun::Position3D> all_points3d(pwn_vector.size());
+        std::vector<rerun::Color> all_points_colors(pwn_vector.size(), rerun::Color(0, 169, 252));
+        size_t j = 0;
+        for (auto& pwn : pwn_vector) {
+            auto& p = pwn.first;
+            auto point = vec3(p.x(), p.y(), p.z());
+            all_points3d[j] = rerun::Position3D{point.x, point.y, point.z};
+            j++;
+        }
+        rec.log("all_points",
+                rerun::Points3D(all_points3d).with_colors(all_points_colors).with_radii({0.1f}));
 
         // log unassigned points to rerun
         auto begin = ransac.indices_of_unassigned_points().begin();
         auto end = ransac.indices_of_unassigned_points().end();
         const size_t unassigned_points_size = ransac.number_of_unassigned_points();
         std::vector<rerun::Position3D> visual_points(unassigned_points_size);
-        std::vector<rerun::Color> points_colors(unassigned_points_size, rerun::Color(1, 1, 1));
+        std::vector<rerun::Color> points_colors(unassigned_points_size, rerun::Color(1, 0, 0));
         int i = 0;
         for (auto it = begin; it != end; it++) {
             auto point_with_normal = *(pwn_vector.begin() + *it);
@@ -792,8 +851,20 @@ bool run_cgal_ransac_plane(Viewer* viewer, Model* model) {
             visual_points[i] = rerun::Position3D{p.x, p.y, p.z};
             i++;
         }
-        rec.log("points/unassigned_points",
+        rec.log("unassigned_points",
                 rerun::Points3D(visual_points).with_colors(points_colors).with_radii({0.1f}));
+        // log leftover points to rerun
+        std::vector<rerun::Position3D> leftover_points(leftover_indices.size());
+        std::vector<rerun::Color> leftover_points_colors(leftover_indices.size(),
+                                                        rerun::Color(1, 0, 0));
+        for (const auto& index : leftover_indices) {
+            auto point_with_normal = pwn_vector[index];
+            auto point = point_with_normal.first;
+            auto p = vec3(point.x(), point.y(), point.z());
+            leftover_points.push_back(rerun::Position3D{p.x, p.y, p.z});
+        }
+        rec.log("leftover_points",
+                rerun::Points3D(leftover_points).with_colors(leftover_points_colors).with_radii({0.1f}));
     }
 
     return true;
@@ -894,7 +965,8 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
             outfile << p.x() << " " << p.y() << " " << p.z() << "\n";
         }
         outfile.close();
-        LOG(INFO) << "Exported " << unassigned_points.size() << " unassigned points to " << output_path;
+        LOG(INFO) << "Exported " << unassigned_points.size() << " unassigned points to "
+                  << output_path;
     } else {
         LOG(ERROR) << "Failed to open output file: " << output_path;
     }
@@ -952,7 +1024,8 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
 
         // create csv file to store cylinder parameters
         std::ofstream csv_file("regionGrowing_cylinder_params.csv");
-        csv_file << "cylinder_id,radius,length,start_x,start_y,start_z,end_x,end_y,end_z,inlier_numbers\n";
+        csv_file << "cylinder_id,radius,length,start_x,start_y,start_z,end_x,end_y,end_z,inlier_"
+                    "numbers\n";
 
         for (size_t i = 0; i < regions.size(); ++i) {
             const auto& primitive_and_region = regions[i];
@@ -1001,16 +1074,10 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
             auto radius = cylinder.radius;
 
             // write cylinder parameters to csv file
-            csv_file << i << ","
-                     << cylinder.radius << ","
-                     << length << ","
-                     << start_point.x() << ","
-                     << start_point.y() << ","
-                     << start_point.z() << ","
-                     << end_point.x() << ","
-                     << end_point.y() << ","
-                     << end_point.z() << ","
-                     << indices.size() << "\n";
+            csv_file << i << "," << cylinder.radius << "," << length << "," << start_point.x()
+                     << "," << start_point.y() << "," << start_point.z() << "," << end_point.x()
+                     << "," << end_point.y() << "," << end_point.z() << "," << indices.size()
+                     << "\n";
 
             std::vector<vec3> cylinder_endpoints = {
                 vec3(start_point.x(), start_point.y(), start_point.z()),
@@ -1232,7 +1299,8 @@ bool run_pca_based_ransac(Viewer* viewer, Model* model) {
     // log projected 2d points to rerun
     std::vector<rerun::Position2D> projected_points;
     for (const auto& point : pca_result.points_2d) {
-        projected_points.push_back(rerun::Position2D{static_cast<float>(point.x), static_cast<float>(point.y)});
+        projected_points.push_back(
+            rerun::Position2D{static_cast<float>(point.x), static_cast<float>(point.y)});
     }
     rr.log("projected_points", rerun::Points2D(projected_points).with_radii({0.1f}));
 
@@ -1245,15 +1313,15 @@ bool run_pca_based_ransac(Viewer* viewer, Model* model) {
     params.max_length = 1e6;
     params.tolerance = 0.05;
     params.split_threshold = 1.0;
-    std::vector<custom_ransac::Ransac_2d::Line> lines = ransac_2d.detect(pca_result.points_2d, params);
+    std::vector<custom_ransac::Ransac_2d::Line> lines =
+        ransac_2d.detect(pca_result.points_2d, params);
 
     // log lines to rerun
     std::vector<rerun::Collection<rerun::Vec2D>> lines2d;
     for (const auto& line : lines) {
         rerun::Collection<rerun::Vec2D> strip = {
             {static_cast<float>(line.start.x), static_cast<float>(line.start.y)},
-            {static_cast<float>(line.end.x), static_cast<float>(line.end.y)}
-        };
+            {static_cast<float>(line.end.x), static_cast<float>(line.end.y)}};
         lines2d.push_back(strip);
     }
     rr.log("lines", rerun::LineStrips2D(lines2d).with_radii({0.1f}));
@@ -1274,11 +1342,11 @@ bool run_pca_based_ransac(Viewer* viewer, Model* model) {
     Quadratic_program qp_angles;
     SR_neighbor_query sr_neighbor_query(segments2D);
     Angle_regularization angle_regularization(segments2D,
-                                                CGAL::parameters::maximum_angle(max_angle_2));
+                                              CGAL::parameters::maximum_angle(max_angle_2));
 
     // regularize
     Quadratic_angle_regularizer qp_angle_regularizer(segments2D, sr_neighbor_query,
-                                                        angle_regularization, qp_angles);
+                                                     angle_regularization, qp_angles);
     qp_angle_regularizer.regularize();
 
     // offset regularization
@@ -1288,8 +1356,8 @@ bool run_pca_based_ransac(Viewer* viewer, Model* model) {
 
     // create qp solver and offset-based regularization model
     Quadratic_program qp_offsets;
-    Offset_regularization offset_regularization(
-        segments2D, CGAL::parameters::maximum_offset(max_offset_2));
+    Offset_regularization offset_regularization(segments2D,
+                                                CGAL::parameters::maximum_offset(max_offset_2));
 
     // add each group of parallel segments with at least 2 segments
     sr_neighbor_query.clear();
@@ -1300,7 +1368,7 @@ bool run_pca_based_ransac(Viewer* viewer, Model* model) {
 
     // regularize
     Quadratic_offset_regularizer qp_offset_regularizer(segments2D, sr_neighbor_query,
-                                                        offset_regularization, qp_offsets);
+                                                       offset_regularization, qp_offsets);
     qp_offset_regularizer.regularize();
 
     // log regularized segments to rerun
@@ -1308,8 +1376,7 @@ bool run_pca_based_ransac(Viewer* viewer, Model* model) {
     for (const auto& seg : segments2D) {
         rerun::Collection<rerun::Vec2D> strip = {
             {static_cast<float>(seg.source().x()), static_cast<float>(seg.source().y())},
-            {static_cast<float>(seg.target().x()), static_cast<float>(seg.target().y())}
-        };
+            {static_cast<float>(seg.target().x()), static_cast<float>(seg.target().y())}};
         regularized_lines.push_back(strip);
     }
     rr.log("regularized_lines", rerun::LineStrips2D(regularized_lines).with_radii({0.1f}));
