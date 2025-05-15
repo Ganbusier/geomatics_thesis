@@ -125,8 +125,12 @@ int main(int argc, char** argv) {
     Viewer viewer("Geomatics Thesis");
     viewer.set_background_color(background_color);
     viewer.camera()->setType(Camera::ORTHOGRAPHIC);
-    viewer.camera()->setPosition(vec3(39722.3, 387932, 155.275));
-    viewer.camera()->setOrientation(quat(0.49253, 0.098896, 0.267161, 0.82235));
+    // viewer.camera()->setPosition(vec3(39722.3, 387932, 155.275));
+    // viewer.camera()->setOrientation(quat(0.49253, 0.098896, 0.267161, 0.82235));
+    // viewer.camera()->setPosition(vec3(134943, 400944, 137.151));
+    // viewer.camera()->setOrientation(quat(0.0984378, 0.551045, 0.58733, 0.584554));
+    viewer.camera()->setPosition(vec3(134818, 400910, 87.7576));
+    viewer.camera()->setOrientation(quat(0.375632, 0.392721, 0.599082, 0.588023));
     Model* model = viewer.add_model(input_file_path, true);
     offset_xyz(&viewer, model);
     // set up rendering parameters
@@ -900,7 +904,7 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
     const std::size_t k = 16;
     const FT max_distance = FT(0.1);
     const FT max_angle = FT(25);
-    const FT min_radius = FT(0.1);
+    const FT min_radius = FT(0.01);
     const FT max_radius = FT(1.0);
     const std::size_t min_region_size = 4;
 
@@ -957,19 +961,26 @@ bool run_cgal_region_growing(Viewer* viewer, Model* model) {
         }
     }
 
-    const std::string output_path = "unassigned_points.txt";
-    std::ofstream outfile(output_path);
-    if (outfile.is_open()) {
-        outfile << std::fixed << std::setprecision(6);
-        for (const auto& p : unassigned_points) {
-            outfile << p.x() << " " << p.y() << " " << p.z() << "\n";
-        }
-        outfile.close();
-        LOG(INFO) << "Exported " << unassigned_points.size() << " unassigned points to "
-                  << output_path;
-    } else {
-        LOG(ERROR) << "Failed to open output file: " << output_path;
+    // const std::string output_path = "unassigned_points.txt";
+    // std::ofstream outfile(output_path);
+    // if (outfile.is_open()) {
+    //     outfile << std::fixed << std::setprecision(6);
+    //     for (const auto& p : unassigned_points) {
+    //         outfile << p.x() << " " << p.y() << " " << p.z() << "\n";
+    //     }
+    //     outfile.close();
+    //     LOG(INFO) << "Exported " << unassigned_points.size() << " unassigned points to "
+    //               << output_path;
+    // } else {
+    //     LOG(ERROR) << "Failed to open output file: " << output_path;
+    // }
+
+    // build new easy3d point cloud for unassigned points and save to ply file
+    PointCloud* unassigned_cloud = new PointCloud;
+    for (const auto& p : unassigned_points) {
+        unassigned_cloud->add_vertex(vec3(p.x(), p.y(), p.z()));
     }
+    io::save_ply("unassigned_points.ply", unassigned_cloud, false);
 
     if (!regions.empty()) {
         for (auto& drawable : drawables) {

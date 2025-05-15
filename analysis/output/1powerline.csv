@@ -1,0 +1,31 @@
+Analysis Info,Distance Threshold: 0.1,Angle Threshold: 20.0
+GT File,analysis\groundTruth\1powerline_gt.ply
+Extracted Edges File,analysis\data\1powerline\preservedEdges.ply
+
+GT Edge Index,Edges Within Distance Threshold,Edges Within Angle Threshold,Avg Distance,Std Distance,Avg Angle,Std Angle
+0,114,114,0.061610,0.020681,5.677049,4.240951
+1,86,86,0.051979,0.021012,5.477033,3.478763
+2,121,121,0.055752,0.025441,6.746783,4.203886
+3,141,141,0.055279,0.021304,6.454029,4.382604
+4,100,100,0.052188,0.023126,6.367181,4.048820
+5,105,105,0.051679,0.023273,5.645222,4.032076
+6,156,156,0.045149,0.022218,5.770474,3.996337
+7,118,118,0.048550,0.025527,6.009411,3.771974
+8,148,148,0.043249,0.022669,5.362776,3.955106
+9,116,116,0.060485,0.023058,6.693968,4.394819
+10,90,90,0.072099,0.019641,5.607010,3.707244
+11,101,101,0.069612,0.020560,7.655729,4.742068
+12,82,82,0.073316,0.019670,6.346579,4.086974
+13,136,136,0.067451,0.019766,7.420714,4.746066
+14,144,144,0.066895,0.020981,7.622011,4.381112
+15,153,153,0.055850,0.023461,7.468603,4.547577
+
+Summary,,,,,,
+Total Edges Within Distance Threshold,1911,,,,,
+Total Edges Within Angle Threshold,1911,,,,,
+Avg Edges Within Distance Threshold Per GT Edge,119.437500,,,,,
+Avg Edges Within Angle Threshold Per GT Edge,119.437500,,,,,
+Average of All Avg Distances,0.058196,,,,,
+Average of All Std Distances,0.022024,,,,,
+Average of All Avg Angles,6.395286,,,,,
+Average of All Std Angles,4.169773,,,,,

@@ -4,6 +4,7 @@
 #include <easy3d/core/model.h>
 #include <easy3d/core/point_cloud.h>
 #include <easy3d/fileio/point_cloud_io.h>
+#include <easy3d/fileio/graph_io.h>
 #include <easy3d/kdtree/kdtree_search_eth.h>
 #include <easy3d/renderer/drawable_lines.h>
 #include <easy3d/renderer/drawable_points.h>
@@ -14,10 +15,26 @@
 
 #include <filesystem>
 #include <iostream>
+#include <unordered_map>
 #include <rerun.hpp>
 #include <rerun/demo_utils.hpp>
 
 #include "graph_utils.h"
+
+// 定义vec3的哈希函数，用于unordered_map
+struct vec3_hash {
+    std::size_t operator()(const easy3d::vec3& v) const {
+        return std::hash<float>()(v.x) ^ std::hash<float>()(v.y) ^ std::hash<float>()(v.z);
+    }
+};
+
+// 定义vec3的等价操作符，用于unordered_map
+bool operator==(const easy3d::vec3& lhs, const easy3d::vec3& rhs) {
+    const float epsilon = 1e-6f;
+    return std::abs(lhs.x - rhs.x) < epsilon && 
+           std::abs(lhs.y - rhs.y) < epsilon && 
+           std::abs(lhs.z - rhs.z) < epsilon;
+}
 
 // define Graph as GCO_Graph to avoid conflict with easy3d::Graph when compiling
 #define Graph GCO_Graph
@@ -46,7 +63,7 @@ int main(int argc, char** argv) {
 
     Viewer viewer("Geomatics Thesis");
     Model* model = viewer.add_model(input_file_path, true);
-    offset_xyz(&viewer, model);
+    // offset_xyz(&viewer, model);
 
     // set up rendering parameters
     auto drawable = model->renderer()->get_points_drawable("vertices");
@@ -209,8 +226,8 @@ bool run_gco(Viewer* viewer, Model* model) {
         new GCoptimizationGeneralGraph(global_graph->n_edges(), num_labels);
     
     int scale_factor = 100; // for both data costs and smoothness costs
-    float lambda1 = 10.0f; // control the weight of the data costs
-    float lambda2 = 1.0f; // control the weight of the smoothness costs
+    float lambda1 = 1.0f; // control the weight of the data costs
+    float lambda2 = 0.1f; // control the weight of the smoothness costs
 
     // set data costs
     std::vector<float> data_costs = compute_data_costs(global_graph, cloud, 2.0f, 1.0f,
@@ -262,8 +279,10 @@ bool run_gco(Viewer* viewer, Model* model) {
     rr.log("points", rerun::Points3D(rr_points));
 
     // log preserved and removed edges seperately
-    std::vector<rerun::Collection<rerun::Vec3D>> preserved_edges;
-    std::vector<rerun::Collection<rerun::Vec3D>> removed_edges;
+    std::vector<rerun::Collection<rerun::Vec3D>> rr_preserved_edges;
+    std::vector<rerun::Collection<rerun::Vec3D>> rr_removed_edges;
+    std::vector<std::vector<vec3>> preserved_edges;
+    std::vector<std::vector<vec3>> removed_edges;
     for (const auto& e : global_graph->edges()) {
         int label = gc->whatLabel(e.idx());
         auto source = global_graph->source(e);
@@ -276,16 +295,91 @@ bool run_gco(Viewer* viewer, Model* model) {
             {static_cast<float>(end.x), static_cast<float>(end.y), static_cast<float>(end.z)}};
 
         if (label == 1) {
-            preserved_edges.push_back(strip);
+            rr_preserved_edges.push_back(strip);
+            preserved_edges.push_back({start, end});
         } else {
-            removed_edges.push_back(strip);
+            rr_removed_edges.push_back(strip);
+            removed_edges.push_back({start, end});
         }
     }
 
-    LOG(INFO) << "Preserved edges: " << preserved_edges.size();
-    LOG(INFO) << "Removed edges: " << removed_edges.size();
-    rr.log("preserved_edges", rerun::LineStrips3D(preserved_edges).with_radii({0.02f}));
-    rr.log("removed_edges", rerun::LineStrips3D(removed_edges).with_radii({0.01f}));
+    LOG(INFO) << "Preserved edges: " << rr_preserved_edges.size();
+    LOG(INFO) << "Removed edges: " << rr_removed_edges.size();
+    rr.log("preserved_edges", rerun::LineStrips3D(rr_preserved_edges).with_radii({0.02f}));
+    rr.log("removed_edges", rerun::LineStrips3D(rr_removed_edges).with_radii({0.01f}));
+
+    // 导出preserved_edges到.ply文件
+    easy3d::Graph* preserved_graph = new easy3d::Graph;
+    std::unordered_map<vec3, easy3d::Graph::Vertex, vec3_hash> point_to_vertex_preserved;
+
+    // 为preserved_edges添加顶点和边
+    for (const auto& edge : preserved_edges) {
+        vec3 start(edge[0].x, edge[0].y, edge[0].z);
+        vec3 end(edge[1].x, edge[1].y, edge[1].z);
+        
+        easy3d::Graph::Vertex v1, v2;
+        
+        // 检查起点是否已存在
+        if (point_to_vertex_preserved.find(start) == point_to_vertex_preserved.end()) {
+            v1 = preserved_graph->add_vertex(start);
+            point_to_vertex_preserved[start] = v1;
+        } else {
+            v1 = point_to_vertex_preserved[start];
+        }
+        
+        // 检查终点是否已存在
+        if (point_to_vertex_preserved.find(end) == point_to_vertex_preserved.end()) {
+            v2 = preserved_graph->add_vertex(end);
+            point_to_vertex_preserved[end] = v2;
+        } else {
+            v2 = point_to_vertex_preserved[end];
+        }
+        
+        preserved_graph->add_edge(v1, v2);
+    }
+    
+    // 导出removed_edges到.ply文件
+    easy3d::Graph* removed_graph = new easy3d::Graph;
+    std::unordered_map<vec3, easy3d::Graph::Vertex, vec3_hash> point_to_vertex_removed;
+    
+    // 为removed_edges添加顶点和边
+    for (const auto& edge : removed_edges) {
+        vec3 start(edge[0].x, edge[0].y, edge[0].z);
+        vec3 end(edge[1].x, edge[1].y, edge[1].z);
+        
+        easy3d::Graph::Vertex v1, v2;
+        
+        // 检查起点是否已存在
+        if (point_to_vertex_removed.find(start) == point_to_vertex_removed.end()) {
+            v1 = removed_graph->add_vertex(start);
+            point_to_vertex_removed[start] = v1;
+        } else {
+            v1 = point_to_vertex_removed[start];
+        }
+        
+        // 检查终点是否已存在
+        if (point_to_vertex_removed.find(end) == point_to_vertex_removed.end()) {
+            v2 = removed_graph->add_vertex(end);
+            point_to_vertex_removed[end] = v2;
+        } else {
+            v2 = point_to_vertex_removed[end];
+        }
+        
+        removed_graph->add_edge(v1, v2);
+    }
+    
+    // save preserved_edges and removed_edges
+    io::save_ply("preservedEdges.ply", preserved_graph, false);
+    io::save_ply("removedEdges.ply", removed_graph, false);
+
+    // also save knn_graph, delaunay_graph, global_graph
+    io::save_ply("knnGraph.ply", knn_graph, false);
+    io::save_ply("dtGraph.ply", delaunay_graph, false);
+    io::save_ply("combineGraph.ply", global_graph, false);
+    
+    // 清理资源
+    delete preserved_graph;
+    delete removed_graph;
 
     delete gc;
     delete knn_graph;

@@ -361,11 +361,6 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
     LOG(INFO) << "Mean inliers probability cost: " << mean_inliers_probability_cost;
 
     // ================ Data Costs Computation: edge length costs ================
-    // step 1: for each edge in the graph, perform range search on both end-points within 0.1m radius
-    // step 2: loop, while end points search results are not empty, extend end points by mean-spacing
-    // step 3: stop when end points search results are empty
-    // step 2: use gaussian function to compute the edge length cost using the edge length after search
-    // step 3: store the result into edge_length_costs
 
     LOG(INFO) << "Computing edge length costs...";
 
@@ -393,7 +388,7 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
             direction = direction.normalize();
 
             auto process_vertex = [&](Graph::Vertex v) {
-                float min_angle = 5.0f;
+                float min_angle = 10.0f;
                 Graph::Edge best_edge;
                 for (auto neighbor_edge : graph->edges(v)) {
                     if (processed_edges.count(neighbor_edge.idx())) continue;
@@ -480,12 +475,12 @@ std::vector<float> compute_data_costs(Graph* graph, PointCloud* cloud, float ext
 
     // ================ Data Costs Computation: final data costs ================
     for (size_t i = 0; i < graph->n_edges(); ++i) {
-        float w1 = inlier_prob_weight;
-        float w2 = 1.0f - w1;
-        data_costs[i] = w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i];
+        // float w1 = inlier_prob_weight;
+        // float w2 = 1.0f - w1;
+        // data_costs[i] = w1 * inliers_probability_costs[i] + w2 * edge_length_costs[i];
 
         // another data cost computation method
-        // data_costs[i] = inliers_probability_costs[i] * edge_length_costs[i];
+        data_costs[i] = inliers_probability_costs[i] * edge_length_costs[i];
     }
     LOG(INFO) << "Final data costs computed successfully.";
 
