@@ -24,8 +24,9 @@ def obj_to_ply(obj_file, ply_file):
                 elif line.startswith('curv '):  # curve definition
                     # parse curve indices
                     parts = line[5:].strip().split()
-                    # OBJ格式中，curv行格式为：curv [start_param] [end_param] [vertex_index1] [vertex_index2]
-                    # 所以顶点索引在parts的最后两个元素
+                    # In the obj file, the format of the curv line is:
+                    # curv [start_param] [end_param] [vertex_index1] [vertex_index2]
+                    # so the vertex indices are in the last two elements of parts
                     if len(parts) >= 4:  # ensure we have enough parts
                         vertex_indices = [int(x) - 1 for x in parts[-2:]]  # obj indices start from 1
                         curve_edges.append(vertex_indices)
@@ -34,32 +35,32 @@ def obj_to_ply(obj_file, ply_file):
         unique_indices = {}
         edges = []
         
-        # 创建去重的顶点列表和索引映射
+        # create a list of unique vertices and a mapping of vertex indices
         for edge in curve_edges:
             start_idx = edge[0]
             end_idx = edge[1]
             
-            # 确保索引在有效范围内
+            # ensure the indices are within the valid range
             if start_idx < 0 or start_idx >= len(vertices) or end_idx < 0 or end_idx >= len(vertices):
-                logging.warning(f"跳过无效边: {edge}, 顶点索引超出范围")
+                logging.warning(f"skip invalid edge: {edge}, vertex indices out of range")
                 continue
                 
             start_point = vertices[start_idx]
             end_point = vertices[end_idx]
             
-            # 检查起点是否已存在
+            # check if the start point already exists
             start_point_tuple = tuple(start_point)
             if start_point_tuple not in unique_indices:
                 unique_indices[start_point_tuple] = len(unique_vertices)
                 unique_vertices.append(start_point)
             
-            # 检查终点是否已存在
+            # check if the end point already exists
             end_point_tuple = tuple(end_point)
             if end_point_tuple not in unique_indices:
                 unique_indices[end_point_tuple] = len(unique_vertices)
                 unique_vertices.append(end_point)
             
-            # 添加边，使用新的顶点索引
+            # add edge, using new vertex indices
             edges.append([unique_indices[start_point_tuple], unique_indices[end_point_tuple]])
         
         # save as ASCII ply file
@@ -83,13 +84,13 @@ def obj_to_ply(obj_file, ply_file):
             for edge in edges:
                 f.write(f"2 {edge[0]} {edge[1]}\n")
         
-        logging.info(f"转换 {obj_file} 到 {ply_file}")
-        logging.info(f"  原始顶点数量: {len(vertices)}")
-        logging.info(f"  唯一顶点数量: {len(unique_vertices)}")
-        logging.info(f"  边数量: {len(edges)}")
+        logging.info(f"convert {obj_file} to {ply_file}")
+        logging.info(f"  original vertex count: {len(vertices)}")
+        logging.info(f"  unique vertex count: {len(unique_vertices)}")
+        logging.info(f"  edge count: {len(edges)}")
         
     except Exception as e:
-        logging.error(f"转换obj到ply失败: {str(e)}")
+        logging.error(f"convert obj to ply failed: {str(e)}")
         raise
 
 if __name__ == "__main__":
@@ -98,6 +99,6 @@ if __name__ == "__main__":
                        format='%(asctime)s - %(levelname)s - %(message)s')
     
     # example usage
-    obj_file = "./resources/1powerline.obj"
-    ply_file = "./resources/1powerline_gt.ply"
+    obj_file = "./resources/pylon9_lines.obj"
+    ply_file = "./resources/pylon9_lines.ply"
     obj_to_ply(obj_file, ply_file)
